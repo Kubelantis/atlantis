@@ -59,7 +59,7 @@ func (l *DefaultDeleteLockCommand) DeleteLock(logger logging.SimpleLogging, id s
 		return nil, nil
 	}
 	if l.WorkingDirLocker != nil && lock.Pull.BaseRepo != (models.Repo{}) {
-		unlockPull, err := l.WorkingDirLocker.TryLockPull(lock.Pull.BaseRepo.FullName, lock.Pull.Num, command.Unlock, WorkingDirLockMetadata{})
+		unlockPull, err := l.WorkingDirLocker.TryLockPull(lock.Pull.BaseRepo, lock.Pull.Num, command.Unlock, WorkingDirLockMetadata{})
 		if err != nil {
 			return nil, err
 		}
@@ -137,7 +137,7 @@ func (l *DefaultDeleteLockCommand) DeleteLocksByPull(logger logging.SimpleLoggin
 	repoFullName := repo.FullName
 	pull := models.PullRequest{Num: pullNum, BaseRepo: repo}
 	if l.WorkingDirLocker != nil {
-		unlockPull, err := l.WorkingDirLocker.TryLockPull(repoFullName, pullNum, command.Unlock, WorkingDirLockMetadata{})
+		unlockPull, err := l.WorkingDirLocker.TryLockPull(repo, pullNum, command.Unlock, WorkingDirLockMetadata{})
 		if err != nil {
 			return 0, err
 		}

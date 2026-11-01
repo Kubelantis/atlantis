@@ -500,7 +500,7 @@ func TestDeleteLocksByPull_RefusesWhileACommandRuns(t *testing.T) {
 	l := lockmocks.NewMockLocker(ctrl) // no calls expected
 	workingDirLocker := events.NewDefaultWorkingDirLocker()
 	pull := unlockTestPull()
-	release, err := workingDirLocker.TryLock(pull.BaseRepo.FullName, pull.Num, "default", "dir1", "", command.Plan, events.WorkingDirLockMetadata{})
+	release, err := workingDirLocker.TryLock(pull.BaseRepo, pull.Num, "default", "dir1", "", command.Plan, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 	defer release()
 	dlc := events.DefaultDeleteLockCommand{Locker: l, WorkingDir: events.NewMockWorkingDir(), WorkingDirLocker: workingDirLocker}
@@ -561,7 +561,7 @@ func TestDeleteLock_RefusesWhileACommandRuns(t *testing.T) {
 	workingDirLocker := events.NewDefaultWorkingDirLocker()
 	pull := unlockTestPull()
 	lock := &models.ProjectLock{Pull: pull, Workspace: "default", Project: models.Project{Path: "dir1", RepoFullName: "owner/repo"}}
-	release, err := workingDirLocker.TryLock(pull.BaseRepo.FullName, pull.Num, "default", "dir1", "", command.Plan, events.WorkingDirLockMetadata{})
+	release, err := workingDirLocker.TryLock(pull.BaseRepo, pull.Num, "default", "dir1", "", command.Plan, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 	defer release()
 	l.EXPECT().GetLock("id").Return(lock, nil)

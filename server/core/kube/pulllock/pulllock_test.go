@@ -12,10 +12,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/runatlantis/atlantis/server/core/kube"
+	"github.com/runatlantis/atlantis/server/core/kube/cluster"
 	"github.com/runatlantis/atlantis/server/core/kube/kubetest"
 	"github.com/runatlantis/atlantis/server/core/kube/pulllock"
 	"github.com/runatlantis/atlantis/server/events"
 	"github.com/runatlantis/atlantis/server/events/command"
+	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/runatlantis/atlantis/server/logging"
 	. "github.com/runatlantis/atlantis/testing"
 )
@@ -38,20 +41,20 @@ func replicas(t *testing.T, n int) []*pulllock.Locker {
 
 func TestPullLockIsExclusiveAcrossReplicas(t *testing.T) {
 	r := replicas(t, 2)
-	unlock, err := r[0].TryLockPull("org/repo", 1, command.Apply, events.WorkingDirLockMetadata{})
+	unlock, err := r[0].TryLockPull(models.Repo{FullName: "org/repo"}, 1, command.Apply, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 
-	_, err = r[1].TryLockPull("org/repo", 1, command.Plan, events.WorkingDirLockMetadata{})
+	_, err = r[1].TryLockPull(models.Repo{FullName: "org/repo"}, 1, command.Plan, events.WorkingDirLockMetadata{})
 	Assert(t, err != nil, "second replica must not lock the same pull")
 	ErrContains(t, "another Atlantis replica", err)
 
 	// A different pull is independent.
-	unlock2, err := r[1].TryLockPull("org/repo", 2, command.Plan, events.WorkingDirLockMetadata{})
+	unlock2, err := r[1].TryLockPull(models.Repo{FullName: "org/repo"}, 2, command.Plan, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 	unlock2()
 
 	unlock()
-	unlock, err = r[1].TryLockPull("org/repo", 1, command.Plan, events.WorkingDirLockMetadata{})
+	unlock, err = r[1].TryLockPull(models.Repo{FullName: "org/repo"}, 1, command.Plan, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 	unlock()
 }
@@ -60,39 +63,39 @@ func TestPullLockIsReentrantWithinReplica(t *testing.T) {
 	r := replicas(t, 2)
 	var unlocks []func()
 	for _, dir := range []string{"a", "b", "c"} {
-		u, err := r[0].TryLock("org/repo", 1, "default", dir, "", command.Plan, events.WorkingDirLockMetadata{})
+		u, err := r[0].TryLock(models.Repo{FullName: "org/repo"}, 1, "default", dir, "", command.Plan, events.WorkingDirLockMetadata{})
 		Ok(t, err)
 		unlocks = append(unlocks, u)
 	}
 	unlocks[0]()
 	unlocks[1]()
-	_, err := r[1].TryLock("org/repo", 1, "default", "a", "", command.Plan, events.WorkingDirLockMetadata{})
+	_, err := r[1].TryLock(models.Repo{FullName: "org/repo"}, 1, "default", "a", "", command.Plan, events.WorkingDirLockMetadata{})
 	Assert(t, err != nil, "lease must be held while any project lock is held")
 	unlocks[2]()
-	u, err := r[1].TryLock("org/repo", 1, "default", "a", "", command.Plan, events.WorkingDirLockMetadata{})
+	u, err := r[1].TryLock(models.Repo{FullName: "org/repo"}, 1, "default", "a", "", command.Plan, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 	u()
 }
 
 func TestPullLockSurvivesPastDurationWhileRenewed(t *testing.T) {
 	r := replicas(t, 2)
-	unlock, err := r[0].TryLockPull("org/repo", 1, command.Apply, events.WorkingDirLockMetadata{})
+	unlock, err := r[0].TryLockPull(models.Repo{FullName: "org/repo"}, 1, command.Apply, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 	time.Sleep(5 * time.Second)
-	_, err = r[1].TryLockPull("org/repo", 1, command.Plan, events.WorkingDirLockMetadata{})
+	_, err = r[1].TryLockPull(models.Repo{FullName: "org/repo"}, 1, command.Plan, events.WorkingDirLockMetadata{})
 	Assert(t, err != nil, "renewed lease must not expire")
 	unlock()
 }
 
 func TestStaleReleaseDoesNotDropNewAcquisition(t *testing.T) {
 	r := replicas(t, 2)
-	stale, err := r[0].TryLock("org/repo", 1, "default", "a", "", command.Plan, events.WorkingDirLockMetadata{})
+	stale, err := r[0].TryLock(models.Repo{FullName: "org/repo"}, 1, "default", "a", "", command.Plan, events.WorkingDirLockMetadata{})
 	Ok(t, err)
-	r[0].UnlockByPull("org/repo", 1)
-	fresh, err := r[0].TryLock("org/repo", 1, "default", "b", "", command.Plan, events.WorkingDirLockMetadata{})
+	r[0].UnlockByPull(models.Repo{FullName: "org/repo"}, 1)
+	fresh, err := r[0].TryLock(models.Repo{FullName: "org/repo"}, 1, "default", "b", "", command.Plan, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 	stale()
-	_, err = r[1].TryLockPull("org/repo", 1, command.Plan, events.WorkingDirLockMetadata{})
+	_, err = r[1].TryLockPull(models.Repo{FullName: "org/repo"}, 1, command.Plan, events.WorkingDirLockMetadata{})
 	Assert(t, err != nil, "fresh acquisition must still hold the lease")
 	fresh()
 }
@@ -104,7 +107,7 @@ func TestConcurrentReplicasOneWinner(t *testing.T) {
 	wins := 0
 	for _, l := range r {
 		wg.Go(func() {
-			if _, err := l.TryLockPull("org/repo", 9, command.Apply, events.WorkingDirLockMetadata{}); err == nil {
+			if _, err := l.TryLockPull(models.Repo{FullName: "org/repo"}, 9, command.Apply, events.WorkingDirLockMetadata{}); err == nil {
 				mu.Lock()
 				wins++
 				mu.Unlock()
@@ -121,18 +124,20 @@ func TestLosingLeaseToAnotherReplicaFencesAndNotifies(t *testing.T) {
 	a := pulllock.New(pulllock.Config{
 		Local: events.NewDefaultWorkingDirLocker(), Client: c, Namespace: ns, Identity: "a",
 		Duration: 3 * time.Second, Logger: logging.NewNoopLogger(t),
-		OnLost: func(repo string, pull int) { lost <- fmt.Sprintf("%s#%d", repo, pull) },
+		OnLost: func(repo models.Repo, pull int) { lost <- fmt.Sprintf("%s#%d", repo.FullName, pull) },
 	})
-	unlock, err := a.TryLockPull("org/repo", 1, command.Apply, events.WorkingDirLockMetadata{})
+	unlock, err := a.TryLockPull(models.Repo{FullName: "org/repo"}, 1, command.Apply, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 	defer unlock()
-	Assert(t, !a.LostPullLock("org/repo", 1), "fresh lease must be trusted")
+	Assert(t, !a.LostPullLock(models.Repo{FullName: "org/repo"}, 1), "fresh lease must be trusted")
 
-	// Another replica takes the lease over (as it would after A stopped
-	// renewing); A must notice on its next renewal.
+	// Another replica takes a lease over (as it would after A stopped
+	// renewing); A must notice on its next renewal. The pull has two leases
+	// for one release, the current one and the legacy one; losing either
+	// loses the pull.
 	var leases coordinationv1.LeaseList
 	Ok(t, c.List(context.Background(), &leases, client.InNamespace(ns)))
-	Equals(t, 1, len(leases.Items))
+	Equals(t, 2, len(leases.Items))
 	other := "b"
 	now := metav1.NewMicroTime(time.Now())
 	leases.Items[0].Spec.HolderIdentity, leases.Items[0].Spec.RenewTime = &other, &now
@@ -144,29 +149,29 @@ func TestLosingLeaseToAnotherReplicaFencesAndNotifies(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("OnLost was not called")
 	}
-	Assert(t, a.LostPullLock("org/repo", 1), "lost lease must fail the fencing check")
+	Assert(t, a.LostPullLock(models.Repo{FullName: "org/repo"}, 1), "lost lease must fail the fencing check")
 
 	// A cannot start a new command on the pull while the command that lost
 	// the lease is still running, and that command stays fenced.
-	_, err = a.TryLock("org/repo", 1, "default", "other", "", command.Plan, events.WorkingDirLockMetadata{})
+	_, err = a.TryLock(models.Repo{FullName: "org/repo"}, 1, "default", "other", "", command.Plan, events.WorkingDirLockMetadata{})
 	ErrContains(t, "lost the lock for pull request 1", err)
-	Assert(t, a.LostPullLock("org/repo", 1), "the running command must stay fenced after a new command tried to start")
+	Assert(t, a.LostPullLock(models.Repo{FullName: "org/repo"}, 1), "the running command must stay fenced after a new command tried to start")
 }
 
 func TestUnlockByPullKeepsLeaseWhileCommandsRun(t *testing.T) {
 	r := replicas(t, 2)
-	running, err := r[0].TryLock("org/repo", 1, "default", "a", "", command.Apply, events.WorkingDirLockMetadata{})
+	running, err := r[0].TryLock(models.Repo{FullName: "org/repo"}, 1, "default", "a", "", command.Apply, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 
 	// `atlantis cancel` clears local locks; the running apply keeps going, so
 	// another replica must not get the pull.
-	r[0].UnlockByPull("org/repo", 1)
-	_, err = r[1].TryLockPull("org/repo", 1, command.Plan, events.WorkingDirLockMetadata{})
+	r[0].UnlockByPull(models.Repo{FullName: "org/repo"}, 1)
+	_, err = r[1].TryLockPull(models.Repo{FullName: "org/repo"}, 1, command.Plan, events.WorkingDirLockMetadata{})
 	ErrContains(t, "another Atlantis replica", err)
 	Assert(t, r[0].Holds("org/repo", 1), "replica running the apply must still hold the lease")
 
 	running()
-	unlock, err := r[1].TryLockPull("org/repo", 1, command.Plan, events.WorkingDirLockMetadata{})
+	unlock, err := r[1].TryLockPull(models.Repo{FullName: "org/repo"}, 1, command.Plan, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 	unlock()
 }
@@ -183,13 +188,13 @@ func TestPullLockIsExclusiveBetweenProcessesWithOneName(t *testing.T) {
 	}
 	old, restarted := locker(), locker()
 
-	unlock, err := old.TryLockPull("org/repo", 1, command.Apply, events.WorkingDirLockMetadata{})
+	unlock, err := old.TryLockPull(models.Repo{FullName: "org/repo"}, 1, command.Apply, events.WorkingDirLockMetadata{})
 	Ok(t, err)
-	_, err = restarted.TryLockPull("org/repo", 1, command.Plan, events.WorkingDirLockMetadata{})
+	_, err = restarted.TryLockPull(models.Repo{FullName: "org/repo"}, 1, command.Plan, events.WorkingDirLockMetadata{})
 	Assert(t, err != nil, "a second process with the same name locked a held pull")
 
 	unlock()
-	unlock, err = restarted.TryLockPull("org/repo", 1, command.Plan, events.WorkingDirLockMetadata{})
+	unlock, err = restarted.TryLockPull(models.Repo{FullName: "org/repo"}, 1, command.Plan, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 	unlock()
 }
@@ -198,17 +203,17 @@ func TestPullLockIsExclusiveBetweenProcessesWithOneName(t *testing.T) {
 // can exercise the lease alone.
 type grantingLocker struct{}
 
-func (grantingLocker) TryLockPull(string, int, command.Name, events.WorkingDirLockMetadata) (func(), error) {
+func (grantingLocker) TryLockPull(models.Repo, int, command.Name, events.WorkingDirLockMetadata) (func(), error) {
 	return func() {}, nil
 }
 
-func (grantingLocker) TryLock(string, int, string, string, string, command.Name, events.WorkingDirLockMetadata) (func(), error) {
+func (grantingLocker) TryLock(models.Repo, int, string, string, string, command.Name, events.WorkingDirLockMetadata) (func(), error) {
 	return func() {}, nil
 }
 
-func (grantingLocker) HasCommandLock(string, int, command.Name) bool { return false }
+func (grantingLocker) HasCommandLock(models.Repo, int, command.Name) bool { return false }
 
-func (grantingLocker) UnlockByPull(string, int) {}
+func (grantingLocker) UnlockByPull(models.Repo, int) {}
 
 // A release that deletes the lease must not delete a lease the same replica
 // takes again meanwhile. The second acquisition may run before, during or
@@ -226,11 +231,11 @@ func TestReleaseThenReacquireKeepsLease(t *testing.T) {
 		}))
 	}
 	for i := range 20 {
-		first, err := r[0].TryLockPull("org/repo", 1, command.Plan, events.WorkingDirLockMetadata{})
+		first, err := r[0].TryLockPull(models.Repo{FullName: "org/repo"}, 1, command.Plan, events.WorkingDirLockMetadata{})
 		Ok(t, err)
 		done := make(chan func())
 		go func() {
-			second, err := r[0].TryLockPull("org/repo", 1, command.Plan, events.WorkingDirLockMetadata{})
+			second, err := r[0].TryLockPull(models.Repo{FullName: "org/repo"}, 1, command.Plan, events.WorkingDirLockMetadata{})
 			if err != nil {
 				t.Errorf("iteration %d: reacquire: %s", i, err)
 				second = func() {}
@@ -240,7 +245,7 @@ func TestReleaseThenReacquireKeepsLease(t *testing.T) {
 		first()
 		second := <-done
 		// The second acquisition holds the pull; the other replica must not.
-		_, err = r[1].TryLockPull("org/repo", 1, command.Plan, events.WorkingDirLockMetadata{})
+		_, err = r[1].TryLockPull(models.Repo{FullName: "org/repo"}, 1, command.Plan, events.WorkingDirLockMetadata{})
 		Assert(t, err != nil, "iteration %d: lease was deleted under a live acquisition", i)
 		second()
 	}
@@ -254,14 +259,48 @@ func TestUnrenewedLeaseStopsBeingTrusted(t *testing.T) {
 		Duration: 30 * time.Second, Logger: logging.NewNoopLogger(t),
 		Now: func() time.Time { return time.Now().Add(time.Duration(offset.Load())) },
 	})
-	unlock, err := a.TryLockPull("org/repo", 1, command.Apply, events.WorkingDirLockMetadata{})
+	unlock, err := a.TryLockPull(models.Repo{FullName: "org/repo"}, 1, command.Apply, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 	defer unlock()
-	Assert(t, !a.LostPullLock("org/repo", 1), "fresh lease must be trusted")
+	Assert(t, !a.LostPullLock(models.Repo{FullName: "org/repo"}, 1), "fresh lease must be trusted")
 
 	// Half the lease duration without a renewal: other replicas may soon take
 	// it over, so this replica must stop starting steps before they can.
 	offset.Store(int64(16 * time.Second))
-	Assert(t, a.LostPullLock("org/repo", 1), "stale lease must fail the fencing check")
-	Assert(t, !a.LostPullLock("org/repo", 2), "pulls not locked here are not fenced")
+	Assert(t, a.LostPullLock(models.Repo{FullName: "org/repo"}, 1), "stale lease must fail the fencing check")
+	Assert(t, !a.LostPullLock(models.Repo{FullName: "org/repo"}, 2), "pulls not locked here are not fenced")
+}
+
+// For one release the pull lock also holds the lease named by the repo full
+// name alone, as earlier versions name it, so a replica still running an
+// earlier version during a rolling update is kept out of the pull.
+func TestPullLockAlsoHoldsTheLegacyLease(t *testing.T) {
+	c, ns := kubetest.Client(t)
+	repo := models.Repo{FullName: "org/repo", VCSHost: models.VCSHost{Hostname: "github.com"}}
+	l := pulllock.New(pulllock.Config{
+		Local: events.NewDefaultWorkingDirLocker(), Client: c, Namespace: ns, Identity: "new",
+		Duration: 3 * time.Second, Logger: logging.NewNoopLogger(t),
+	})
+	legacyName := kube.Name("pulllock", "org/repo#1")
+
+	unlock, err := l.TryLockPull(repo, 1, command.Plan, events.WorkingDirLockMetadata{})
+	Ok(t, err)
+	var leases coordinationv1.LeaseList
+	Ok(t, c.List(context.Background(), &leases, client.InNamespace(ns)))
+	names := map[string]bool{}
+	for _, lease := range leases.Items {
+		names[lease.Name] = true
+	}
+	Equals(t, map[string]bool{kube.Name("pulllock", "github.com/org/repo#1"): true, legacyName: true}, names)
+	unlock()
+	Ok(t, c.List(context.Background(), &leases, client.InNamespace(ns)))
+	Equals(t, 0, len(leases.Items))
+
+	// A replica on an earlier version holds the pull under the legacy name.
+	old := &cluster.TimedLease{Client: c, Namespace: ns, Name: legacyName, Holder: "old", Duration: 30 * time.Second}
+	Ok(t, old.Acquire(context.Background()))
+	_, err = l.TryLockPull(repo, 1, command.Plan, events.WorkingDirLockMetadata{})
+	ErrContains(t, "another Atlantis replica", err)
+	Ok(t, c.List(context.Background(), &leases, client.InNamespace(ns)))
+	Equals(t, 1, len(leases.Items)) // the new-name lease was given back
 }

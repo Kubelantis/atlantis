@@ -26,10 +26,10 @@ func TestCancelKeepsLocksOfRunningCommands(t *testing.T) {
 	pull := models.PullRequest{Num: 1, BaseRepo: models.Repo{FullName: "owner/repo"}}
 
 	// A running apply of the pull holds its pull lock and a workspace lock.
-	releasePull, err := locker.TryLockPull("owner/repo", 1, command.Apply, events.WorkingDirLockMetadata{})
+	releasePull, err := locker.TryLockPull(models.Repo{FullName: "owner/repo"}, 1, command.Apply, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 	defer releasePull()
-	releaseWorkspace, err := locker.TryLock("owner/repo", 1, "default", ".", "", command.Apply, events.WorkingDirLockMetadata{})
+	releaseWorkspace, err := locker.TryLock(models.Repo{FullName: "owner/repo"}, 1, "default", ".", "", command.Apply, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 	defer releaseWorkspace()
 
@@ -37,9 +37,9 @@ func TestCancelKeepsLocksOfRunningCommands(t *testing.T) {
 	runner.Run(&command.Context{Log: logging.NewNoopLogger(t), Pull: pull}, &events.CommentCommand{Name: command.Cancel})
 
 	Assert(t, tracker.IsCancelled(pull), "queued work was not cancelled")
-	_, err = locker.TryLockPull("owner/repo", 1, command.Plan, events.WorkingDirLockMetadata{})
+	_, err = locker.TryLockPull(models.Repo{FullName: "owner/repo"}, 1, command.Plan, events.WorkingDirLockMetadata{})
 	Assert(t, err != nil, "a new command could lock the pull while another was running")
-	_, err = locker.TryLock("owner/repo", 1, "default", ".", "", command.Plan, events.WorkingDirLockMetadata{})
+	_, err = locker.TryLock(models.Repo{FullName: "owner/repo"}, 1, "default", ".", "", command.Plan, events.WorkingDirLockMetadata{})
 	Assert(t, err != nil, "a new command could lock the workspace while another was running")
 	vcsClient.VerifyWasCalledOnce().CreateComment(Any[logging.SimpleLogging](), Eq(pull.BaseRepo), Eq(1), Any[string](), Eq(""))
 }

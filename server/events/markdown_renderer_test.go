@@ -108,20 +108,20 @@ func TestRenderWorkingDirLockMetadata(t *testing.T) {
 	metadata := events.WorkingDirLockMetadata{HeadCommit: sha, CommitURL: commitURL, JobURL: jobURL}
 	newLockError := func(ownerMetadata events.WorkingDirLockMetadata) error {
 		locker := events.NewDefaultWorkingDirLocker()
-		_, err := locker.TryLock("owner/repo", 1, "default", ".", "project", command.Plan, ownerMetadata)
+		_, err := locker.TryLock(models.Repo{FullName: "owner/repo"}, 1, "default", ".", "project", command.Plan, ownerMetadata)
 		Ok(t, err)
-		_, err = locker.TryLock("owner/repo", 1, "default", ".", "project", command.Apply, events.WorkingDirLockMetadata{})
+		_, err = locker.TryLock(models.Repo{FullName: "owner/repo"}, 1, "default", ".", "project", command.Apply, events.WorkingDirLockMetadata{})
 		return err
 	}
 	newMultipleJobsLockError := func() error {
 		locker := events.NewDefaultWorkingDirLocker()
-		_, err := locker.TryLockPull("owner/repo", 1, command.Plan, metadata)
+		_, err := locker.TryLockPull(models.Repo{FullName: "owner/repo"}, 1, command.Plan, metadata)
 		Ok(t, err)
 		for i, url := range []string{jobURL + "-1", jobURL + "-2"} {
-			_, err = locker.TryLock("owner/repo", 1, "default", ".", fmt.Sprintf("project-%d", i), command.Plan, events.WorkingDirLockMetadata{HeadCommit: sha, JobURL: url})
+			_, err = locker.TryLock(models.Repo{FullName: "owner/repo"}, 1, "default", ".", fmt.Sprintf("project-%d", i), command.Plan, events.WorkingDirLockMetadata{HeadCommit: sha, JobURL: url})
 			Ok(t, err)
 		}
-		_, err = locker.TryLockPull("owner/repo", 1, command.Apply, events.WorkingDirLockMetadata{})
+		_, err = locker.TryLockPull(models.Repo{FullName: "owner/repo"}, 1, command.Apply, events.WorkingDirLockMetadata{})
 		return err
 	}
 	newRenderer := func(language string) *events.MarkdownRenderer {

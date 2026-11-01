@@ -86,11 +86,11 @@ func TestWorkingDirLockMetadataForProject(t *testing.T) {
 func TestWorkingDirLockErrorUsesOwnerMetadata(t *testing.T) {
 	locker := NewDefaultWorkingDirLocker()
 	owner := WorkingDirLockMetadata{HeadCommit: "owner-sha", CommitURL: "owner-commit", JobURL: "owner-job"}
-	_, err := locker.TryLock("owner/repo", 1, "default", ".", "project", command.Plan, owner)
+	_, err := locker.TryLock(models.Repo{FullName: "owner/repo"}, 1, "default", ".", "project", command.Plan, owner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = locker.TryLock("owner/repo", 1, "default", ".", "project", command.Apply, WorkingDirLockMetadata{HeadCommit: "loser-sha", CommitURL: "loser-commit", JobURL: "loser-job"})
+	_, err = locker.TryLock(models.Repo{FullName: "owner/repo"}, 1, "default", ".", "project", command.Apply, WorkingDirLockMetadata{HeadCommit: "loser-sha", CommitURL: "loser-commit", JobURL: "loser-job"})
 	lockErr, ok := err.(*workingDirLockError)
 	if !ok {
 		t.Fatalf("expected typed lock error, got %T", err)
@@ -103,11 +103,11 @@ func TestWorkingDirLockErrorUsesOwnerMetadata(t *testing.T) {
 func TestTryLockPullUsesBlockingPlanProjectMetadata(t *testing.T) {
 	locker := NewDefaultWorkingDirLocker()
 	owner := WorkingDirLockMetadata{HeadCommit: "owner-sha", CommitURL: "owner-commit", JobURL: "owner-job"}
-	_, err := locker.TryLock("owner/repo", 1, "default", ".", "project", command.Plan, owner)
+	_, err := locker.TryLock(models.Repo{FullName: "owner/repo"}, 1, "default", ".", "project", command.Plan, owner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = locker.TryLockPull("owner/repo", 1, command.Apply, WorkingDirLockMetadata{})
+	_, err = locker.TryLockPull(models.Repo{FullName: "owner/repo"}, 1, command.Apply, WorkingDirLockMetadata{})
 	lockErr, ok := err.(*workingDirLockError)
 	if !ok {
 		t.Fatalf("expected typed lock error, got %T", err)
@@ -118,7 +118,7 @@ func TestTryLockPullUsesBlockingPlanProjectMetadata(t *testing.T) {
 }
 
 func TestTryLockPullKeepsBlockingCommitMetadataTogether(t *testing.T) {
-	const repo = "owner/repo"
+	repo := models.Repo{FullName: "owner/repo"}
 	locker := NewDefaultWorkingDirLocker()
 	_, err := locker.TryLockPull(repo, 1, command.Plan, WorkingDirLockMetadata{HeadCommit: "old", CommitURL: "old-commit"})
 	if err != nil {
@@ -142,7 +142,7 @@ func TestTryLockPullKeepsBlockingCommitMetadataTogether(t *testing.T) {
 }
 
 func TestTryLockPullFindsPlanForCurrentCommit(t *testing.T) {
-	const repo = "owner/repo"
+	repo := models.Repo{FullName: "owner/repo"}
 	locker := NewDefaultWorkingDirLocker()
 	for i, metadata := range []WorkingDirLockMetadata{
 		{HeadCommit: "old", JobURL: "old-job"},
@@ -162,7 +162,7 @@ func TestTryLockPullFindsPlanForCurrentCommit(t *testing.T) {
 }
 
 func TestTryLockPullSelectsActiveProjectJobs(t *testing.T) {
-	const repo = "owner/repo"
+	repo := models.Repo{FullName: "owner/repo"}
 	const jobURL = "https://atlantis.example.com/jobs/job-id"
 	tests := []struct {
 		name         string

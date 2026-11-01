@@ -556,10 +556,10 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 
 	applyLockingClient = locking.NewApplyClient(database, disableApply, disableGlobalApplyLock)
 	cancellationTracker := events.NewCancellationTracker()
-	workingDirLocker := kubeRT.workingDirLocker(events.NewDefaultWorkingDirLocker(), func(repoFullName string, pullNum int) {
+	workingDirLocker := kubeRT.workingDirLocker(events.NewDefaultWorkingDirLocker(), func(repo models.Repo, pullNum int) {
 		// Stop queued projects and execution groups; the step-level fencing
 		// check stops the current project's remaining steps.
-		cancellationTracker.Cancel(models.PullRequest{Num: pullNum, BaseRepo: models.Repo{FullName: repoFullName}})
+		cancellationTracker.Cancel(models.PullRequest{Num: pullNum, BaseRepo: repo})
 	})
 
 	var workingDir events.WorkingDir = &events.FileWorkspace{

@@ -165,13 +165,13 @@ func (k *kubeRuntime) database() (*kubedb.KubeDB, error) {
 
 // workingDirLocker returns the Lease-backed locker. onLost is called when a
 // pull's lease is lost to another replica.
-func (k *kubeRuntime) workingDirLocker(local events.WorkingDirLocker, onLost func(repoFullName string, pullNum int)) events.WorkingDirLocker {
+func (k *kubeRuntime) workingDirLocker(local events.WorkingDirLocker, onLost func(repo models.Repo, pullNum int)) events.WorkingDirLocker {
 	lost := k.scope.Counter("pull_lock_lost")
 	return pulllock.New(pulllock.Config{
 		Local: local, Client: k.client, Namespace: k.namespace, Identity: k.identity, Incarnation: k.incarnation, Logger: k.logger,
-		OnLost: func(repoFullName string, pullNum int) {
+		OnLost: func(repo models.Repo, pullNum int) {
 			lost.Inc(1)
-			onLost(repoFullName, pullNum)
+			onLost(repo, pullNum)
 		},
 	})
 }
