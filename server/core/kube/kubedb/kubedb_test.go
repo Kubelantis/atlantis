@@ -37,7 +37,7 @@ func TestUnlockByPullMatchesRepoExactly(t *testing.T) {
 	lock := func(repo string) models.ProjectLock {
 		return models.ProjectLock{
 			Project:   models.NewProject(repo, ".", ""),
-			Pull:      models.PullRequest{Num: 1},
+			Pull:      models.PullRequest{Num: 1, BaseRepo: models.Repo{FullName: repo}},
 			Workspace: "default",
 			Time:      time.Now(),
 		}
@@ -47,7 +47,7 @@ func TestUnlockByPullMatchesRepoExactly(t *testing.T) {
 	_, _, err = d.TryLock(lock("org/repo2"))
 	Ok(t, err)
 
-	unlocked, err := d.UnlockByPull("org/repo", 1)
+	unlocked, err := d.UnlockByPull(models.Repo{FullName: "org/repo"}, 1)
 	Ok(t, err)
 	Equals(t, 1, len(unlocked))
 	remaining, err := d.List()

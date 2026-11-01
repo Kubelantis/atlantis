@@ -191,18 +191,18 @@ func (mr *MockDatabaseMockRecorder) Unlock(project, workspace any) *gomock.Call 
 }
 
 // UnlockByPull mocks base method.
-func (m *MockDatabase) UnlockByPull(repoFullName string, pullNum int) ([]models.ProjectLock, error) {
+func (m *MockDatabase) UnlockByPull(repo models.Repo, pullNum int) ([]models.ProjectLock, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UnlockByPull", repoFullName, pullNum)
+	ret := m.ctrl.Call(m, "UnlockByPull", repo, pullNum)
 	ret0, _ := ret[0].([]models.ProjectLock)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // UnlockByPull indicates an expected call of UnlockByPull.
-func (mr *MockDatabaseMockRecorder) UnlockByPull(repoFullName, pullNum any) *gomock.Call {
+func (mr *MockDatabaseMockRecorder) UnlockByPull(repo, pullNum any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnlockByPull", reflect.TypeOf((*MockDatabase)(nil).UnlockByPull), repoFullName, pullNum)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnlockByPull", reflect.TypeOf((*MockDatabase)(nil).UnlockByPull), repo, pullNum)
 }
 
 // UnlockCommand mocks base method.
@@ -220,18 +220,18 @@ func (mr *MockDatabaseMockRecorder) UnlockCommand(cmdName any) *gomock.Call {
 }
 
 // UnlockIfOwnedByPull mocks base method.
-func (m *MockDatabase) UnlockIfOwnedByPull(project models.Project, workspace string, pullNum int) (*models.ProjectLock, error) {
+func (m *MockDatabase) UnlockIfOwnedByPull(project models.Project, workspace string, pull models.PullRequest) (*models.ProjectLock, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UnlockIfOwnedByPull", project, workspace, pullNum)
+	ret := m.ctrl.Call(m, "UnlockIfOwnedByPull", project, workspace, pull)
 	ret0, _ := ret[0].(*models.ProjectLock)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // UnlockIfOwnedByPull indicates an expected call of UnlockIfOwnedByPull.
-func (mr *MockDatabaseMockRecorder) UnlockIfOwnedByPull(project, workspace, pullNum any) *gomock.Call {
+func (mr *MockDatabaseMockRecorder) UnlockIfOwnedByPull(project, workspace, pull any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnlockIfOwnedByPull", reflect.TypeOf((*MockDatabase)(nil).UnlockIfOwnedByPull), project, workspace, pullNum)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnlockIfOwnedByPull", reflect.TypeOf((*MockDatabase)(nil).UnlockIfOwnedByPull), project, workspace, pull)
 }
 
 // UpdateProjectStatus mocks base method.

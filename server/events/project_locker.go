@@ -61,7 +61,9 @@ func (p *DefaultProjectLocker) TryLock(log logging.SimpleLogging, pull models.Pu
 	if err != nil {
 		return nil, err
 	}
-	if !lockAttempt.LockAcquired && lockAttempt.CurrLock.Pull.Num != pull.Num {
+	// The lock may be held by the same pull number on another VCS host;
+	// that is another pull.
+	if !lockAttempt.LockAcquired && !lockAttempt.CurrLock.Pull.SameAs(pull) {
 		link, err := p.VCSClient.MarkdownPullLink(lockAttempt.CurrLock.Pull)
 		if err != nil {
 			return nil, err
@@ -80,7 +82,7 @@ func (p *DefaultProjectLocker) TryLock(log logging.SimpleLogging, pull models.Pu
 	return &TryLockResponse{
 		LockAcquired: true,
 		UnlockFn: func() error {
-			_, err := locker.UnlockIfOwnedByPull(project, workspace, pull.Num)
+			_, err := locker.UnlockIfOwnedByPull(project, workspace, pull)
 			return err
 		},
 		LockKey: lockAttempt.LockKey,

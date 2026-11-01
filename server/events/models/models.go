@@ -237,6 +237,13 @@ type PullRequest struct {
 	BaseRepo Repo
 }
 
+// SameAs reports whether p and o are the same pull request: the same number
+// in the same repo on the same VCS host. One server can serve several VCS
+// providers, and two of them can have a repo with the same full name.
+func (p PullRequest) SameAs(o PullRequest) bool {
+	return p.Num == o.Num && p.BaseRepo.ID() == o.BaseRepo.ID()
+}
+
 // PullRequestOptions is used to set optional paralmeters for PullRequest
 type PullRequestOptions struct {
 	// When DeleteSourceBranchOnMerge flag is set to true VCS deletes the source branch after the PR is merged

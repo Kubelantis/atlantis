@@ -62,7 +62,7 @@ func TestDeleteLock_Success(t *testing.T) {
 		},
 	}
 	l.EXPECT().GetLock("id").Return(lock, nil)
-	l.EXPECT().UnlockIfOwnedByPull(lock.Project, workspace, pull.Num).Return(lock, nil)
+	l.EXPECT().UnlockIfOwnedByPull(lock.Project, workspace, pull).Return(lock, nil)
 	workingDir := events.NewMockWorkingDir()
 	workingDirLocker := events.NewDefaultWorkingDirLocker()
 	db := kubedbtest.New(t)
@@ -109,7 +109,7 @@ func TestDeleteLock_RecordsDiscardBeforeUnlocking(t *testing.T) {
 	lock := &models.ProjectLock{Pull: pull, Workspace: "default", Project: models.Project{Path: "dir1", RepoFullName: "owner/repo"}}
 
 	l.EXPECT().GetLock("id").Return(lock, nil)
-	l.EXPECT().UnlockIfOwnedByPull(lock.Project, "default", 2).DoAndReturn(func(models.Project, string, int) (*models.ProjectLock, error) {
+	l.EXPECT().UnlockIfOwnedByPull(lock.Project, "default", pull).DoAndReturn(func(models.Project, string, models.PullRequest) (*models.ProjectLock, error) {
 		status, err := db.GetPullStatus(pull)
 		Ok(t, err)
 		Equals(t, models.DiscardedPlanStatus, status.Projects[0].Status)
@@ -156,7 +156,7 @@ func TestDeleteLock_NoPlanStatus(t *testing.T) {
 	pull := models.PullRequest{BaseRepo: models.Repo{FullName: "owner/repo", VCSHost: models.VCSHost{Hostname: "github.com"}}, Num: 2}
 	lock := &models.ProjectLock{Pull: pull, Workspace: "default", Project: models.Project{Path: "dir1", RepoFullName: "owner/repo"}}
 	l.EXPECT().GetLock("id").Return(lock, nil)
-	l.EXPECT().UnlockIfOwnedByPull(lock.Project, "default", 2).Return(lock, nil)
+	l.EXPECT().UnlockIfOwnedByPull(lock.Project, "default", pull).Return(lock, nil)
 	dlc := events.DefaultDeleteLockCommand{Locker: l, WorkingDir: workingDir, Database: db}
 
 	got, err := dlc.DeleteLock(logger, "id")
@@ -173,12 +173,12 @@ func TestDeleteLocksByPull_LockerErr(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	l := lockmocks.NewMockLocker(ctrl)
 	workingDir := events.NewMockWorkingDir()
-	l.EXPECT().UnlockByPull(repoName, pullNum).Return(nil, errors.New("err"))
+	l.EXPECT().UnlockByPull(models.Repo{FullName: repoName}, pullNum).Return(nil, errors.New("err"))
 	dlc := events.DefaultDeleteLockCommand{
 		Locker:     l,
 		WorkingDir: workingDir,
 	}
-	_, err := dlc.DeleteLocksByPull(logger, repoName, pullNum)
+	_, err := dlc.DeleteLocksByPull(logger, models.Repo{FullName: repoName}, pullNum)
 	ErrEquals(t, "err", err)
 	workingDir.VerifyWasCalled(Never()).DeletePlan(Any[logging.SimpleLogging](), Any[models.Repo](), Any[models.PullRequest](),
 		Any[string](), Any[string](), Any[string]())
@@ -193,12 +193,12 @@ func TestDeleteLocksByPull_None(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	l := lockmocks.NewMockLocker(ctrl)
 	workingDir := events.NewMockWorkingDir()
-	l.EXPECT().UnlockByPull(repoName, pullNum).Return([]models.ProjectLock{}, nil)
+	l.EXPECT().UnlockByPull(models.Repo{FullName: repoName}, pullNum).Return([]models.ProjectLock{}, nil)
 	dlc := events.DefaultDeleteLockCommand{
 		Locker:     l,
 		WorkingDir: workingDir,
 	}
-	_, err := dlc.DeleteLocksByPull(logger, repoName, pullNum)
+	_, err := dlc.DeleteLocksByPull(logger, models.Repo{FullName: repoName}, pullNum)
 	Ok(t, err)
 	workingDir.VerifyWasCalled(Never()).DeletePlan(Any[logging.SimpleLogging](), Any[models.Repo](), Any[models.PullRequest](),
 		Any[string](), Any[string](), Any[string]())
@@ -221,7 +221,7 @@ func TestDeleteLocksByPull_SingleSuccess(t *testing.T) {
 		BaseRepo: models.Repo{FullName: repoName},
 		Num:      pullNum,
 	}
-	l.EXPECT().UnlockByPull(repoName, pullNum).Return([]models.ProjectLock{
+	l.EXPECT().UnlockByPull(models.Repo{FullName: repoName}, pullNum).Return([]models.ProjectLock{
 		{
 			Pull:      pull,
 			Workspace: workspace,
@@ -237,7 +237,7 @@ func TestDeleteLocksByPull_SingleSuccess(t *testing.T) {
 		Locker:     l,
 		WorkingDir: workingDir,
 	}
-	_, err := dlc.DeleteLocksByPull(logger, repoName, pullNum)
+	_, err := dlc.DeleteLocksByPull(logger, models.Repo{FullName: repoName}, pullNum)
 	Ok(t, err)
 	workingDir.VerifyWasCalled(Once()).DeletePlan(Any[logging.SimpleLogging](), Eq(pull.BaseRepo), Eq(pull), Eq(workspace),
 		Eq(path), Eq(projectName))
@@ -261,7 +261,7 @@ func TestDeleteLocksByPull_MultipleSuccess(t *testing.T) {
 		BaseRepo: models.Repo{FullName: repoName},
 		Num:      pullNum,
 	}
-	l.EXPECT().UnlockByPull(repoName, pullNum).Return([]models.ProjectLock{
+	l.EXPECT().UnlockByPull(models.Repo{FullName: repoName}, pullNum).Return([]models.ProjectLock{
 		{
 			Pull:      pull,
 			Workspace: workspace,
@@ -284,7 +284,7 @@ func TestDeleteLocksByPull_MultipleSuccess(t *testing.T) {
 		Locker:     l,
 		WorkingDir: workingDir,
 	}
-	_, err := dlc.DeleteLocksByPull(logger, repoName, pullNum)
+	_, err := dlc.DeleteLocksByPull(logger, models.Repo{FullName: repoName}, pullNum)
 	Ok(t, err)
 	workingDir.VerifyWasCalled(Once()).DeletePlan(logger, pull.BaseRepo, pull, workspace, path1, projectName)
 	workingDir.VerifyWasCalled(Once()).DeletePlan(logger, pull.BaseRepo, pull, workspace, path2, projectName)
@@ -314,14 +314,14 @@ func TestDeleteLocksByPull_MarksPlansDiscarded(t *testing.T) {
 	}})
 	Ok(t, err)
 
-	l.EXPECT().UnlockByPull("owner/repo", 2).Return([]models.ProjectLock{{
+	l.EXPECT().UnlockByPull(pull.BaseRepo, 2).Return([]models.ProjectLock{{
 		Pull:      pull,
 		Workspace: "default",
 		Project:   models.Project{Path: "dir1", RepoFullName: "owner/repo"},
 	}}, nil)
 	dlc := events.DefaultDeleteLockCommand{Locker: l, WorkingDir: workingDir, Database: db}
 
-	n, err := dlc.DeleteLocksByPull(logger, "owner/repo", 2)
+	n, err := dlc.DeleteLocksByPull(logger, pull.BaseRepo, 2)
 	Ok(t, err)
 	Equals(t, 1, n)
 	status, err := db.GetPullStatus(pull)
@@ -357,14 +357,14 @@ func TestDeleteLocksByPull_DiscardsTheNamedProject(t *testing.T) {
 	_, err := db.UpdatePullWithResults(pull, []command.ProjectResult{plan("a"), plan("b")})
 	Ok(t, err)
 
-	l.EXPECT().UnlockByPull("owner/repo", 2).Return([]models.ProjectLock{
+	l.EXPECT().UnlockByPull(pull.BaseRepo, 2).Return([]models.ProjectLock{
 		{Pull: pull, Workspace: "default", Project: models.Project{Path: "dir1", RepoFullName: "owner/repo", ProjectName: "b"}},
 		// No status was recorded for this one: it is skipped, not an error.
 		{Pull: pull, Workspace: "default", Project: models.Project{Path: "dir2", RepoFullName: "owner/repo"}},
 	}, nil)
 	dlc := events.DefaultDeleteLockCommand{Locker: l, WorkingDir: workingDir, Database: db}
 
-	n, err := dlc.DeleteLocksByPull(logger, "owner/repo", 2)
+	n, err := dlc.DeleteLocksByPull(logger, pull.BaseRepo, 2)
 	Ok(t, err)
 	Equals(t, 2, n)
 	status, err := db.GetPullStatus(pull)
