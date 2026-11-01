@@ -343,6 +343,10 @@ func (r *recordingPlanCleanupLocker) UnlockIfOwnedByPull(project models.Project,
 	return &lock, nil
 }
 
+func (r *recordingPlanCleanupLocker) UnlockExact(models.ProjectLock) (*models.ProjectLock, error) {
+	return nil, nil
+}
+
 func (r *recordingPlanCleanupLocker) UnlockByPull(repo models.Repo, pullNum int) ([]models.ProjectLock, error) {
 	r.unlockByPullCalls = append(r.unlockByPullCalls, unlockByPullCall{repoFullName: repo.FullName, pullNum: pullNum})
 	return nil, nil

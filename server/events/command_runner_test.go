@@ -1873,6 +1873,10 @@ func (l failUnlockByPullLocker) UnlockIfOwnedByPull(models.Project, string, mode
 	return nil, nil
 }
 
+func (l failUnlockByPullLocker) UnlockExact(models.ProjectLock) (*models.ProjectLock, error) {
+	return nil, nil
+}
+
 func (l failUnlockByPullLocker) GetLock(string) (*models.ProjectLock, error) {
 	return nil, nil
 }
@@ -2107,7 +2111,7 @@ func TestRunUnlockCommandFail_VCSComment(t *testing.T) {
 		&events.CommentCommand{Name: command.Unlock})
 
 	vcsClient.VerifyWasCalledOnce().CreateComment(
-		Any[logging.SimpleLogging](), Eq(testdata.GithubRepo), Eq(testdata.Pull.Num), Eq("Failed to delete PR locks"), Eq("unlock"))
+		Any[logging.SimpleLogging](), Eq(testdata.GithubRepo), Eq(testdata.Pull.Num), Eq("Failed to delete PR locks: err"), Eq("unlock"))
 }
 
 func TestRunUnlockCommandFail_DisableUnlockLabel(t *testing.T) {

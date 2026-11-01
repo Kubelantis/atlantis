@@ -28,6 +28,10 @@ type Database interface {
 	UnlockIfOwnedByPull(project models.Project, workspace string, pull models.PullRequest) (*models.ProjectLock, error)
 	List() ([]models.ProjectLock, error)
 	GetLock(project models.Project, workspace string) (*models.ProjectLock, error)
+	// UnlockExact unlocks lock only if the stored lock is the same
+	// acquisition: the same pull and the same acquire time. A lock released
+	// and taken again since lock was read is left alone.
+	UnlockExact(lock models.ProjectLock) (*models.ProjectLock, error)
 	// UnlockByPull unlocks every lock held by pull number pullNum of repo,
 	// matched by VCS host as well as full name.
 	UnlockByPull(repo models.Repo, pullNum int) ([]models.ProjectLock, error)

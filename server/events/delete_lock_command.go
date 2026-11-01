@@ -8,11 +8,11 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strings"
 
 	"github.com/runatlantis/atlantis/server/core/db"
 	"github.com/runatlantis/atlantis/server/core/locking"
 	"github.com/runatlantis/atlantis/server/core/planstore"
+	"github.com/runatlantis/atlantis/server/events/command"
 	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/runatlantis/atlantis/server/logging"
 )
@@ -95,11 +95,21 @@ func (l *DefaultDeleteLockCommand) DeleteLock(logger logging.SimpleLogging, id s
 // store, where deleting files here cannot reach them. If any discard cannot
 // be recorded no lock is released and no plan deleted, so nothing the user
 // asked to discard becomes applicable; recording a discard again on retry is
-// harmless. Only the locks listed here are released, so a lock the pull takes
-// meanwhile (a plan running at the same time) is kept.
+// harmless.
+//
+// It holds the pull's working-dir lock throughout, so no plan or apply of
+// the pull runs meanwhile, and releases only the exact lock acquisitions it
+// listed, so a lock taken again since is kept with its plan.
 func (l *DefaultDeleteLockCommand) DeleteLocksByPull(logger logging.SimpleLogging, repo models.Repo, pullNum int) (int, error) {
 	repoFullName := repo.FullName
 	pull := models.PullRequest{Num: pullNum, BaseRepo: repo}
+	if l.WorkingDirLocker != nil {
+		unlockPull, err := l.WorkingDirLocker.TryLockPull(repoFullName, pullNum, command.Unlock, WorkingDirLockMetadata{})
+		if err != nil {
+			return 0, err
+		}
+		defer unlockPull()
+	}
 	all, err := l.Locker.List()
 	if err != nil {
 		return 0, err
@@ -133,14 +143,14 @@ func (l *DefaultDeleteLockCommand) DeleteLocksByPull(logger logging.SimpleLoggin
 	var errs []error
 	numLocks := 0
 	for _, lock := range locks {
-		released, err := l.Locker.UnlockIfOwnedByPull(lock.Project, lock.Workspace, lock.Pull)
+		released, err := l.Locker.UnlockExact(lock)
 		if err != nil {
 			logger.Warn("Failed to release lock for dir %q workspace %q: %s", lock.Project.Path, lock.Workspace, err)
 			errs = append(errs, err)
 			continue
 		}
 		if released == nil {
-			// Released, or taken by another pull, since it was listed.
+			// Released, or taken again, since it was listed.
 			continue
 		}
 		numLocks++
@@ -148,17 +158,14 @@ func (l *DefaultDeleteLockCommand) DeleteLocksByPull(logger logging.SimpleLoggin
 			logger.Warn("Failed to delete plan: %s", err)
 			errs = append(errs, err)
 		}
-	}
-
-	// Always clean up the external plan store for this pull, even when no
-	// locks were found locally. Locks can be cleaned via other paths (manual
-	// unlock, partial failure) which would otherwise leave orphaned S3 plans.
-	if l.PlanStore != nil {
-		owner, name, ok := strings.Cut(repoFullName, "/")
-		if !ok {
-			logger.Warn("cannot parse owner/repo from %q; skipping external plan store cleanup", repoFullName)
-		} else if err := l.PlanStore.DeleteForPull(owner, name, pullNum); err != nil {
-			logger.Warn("Failed to delete plans from external store: %s", err)
+		// Only this lock's stored plan: plan store keys do not include the
+		// VCS host, so deleting the pull's whole prefix could remove another
+		// provider's plans for a repo with the same name.
+		if l.PlanStore != nil {
+			base := lock.Pull.BaseRepo
+			if err := l.PlanStore.DeletePlanForProject(base.Owner, base.Name, pullNum, lock.Workspace, lock.Project.Path, lock.Project.ProjectName); err != nil {
+				logger.Warn("Failed to delete plan from external store: %s", err)
+			}
 		}
 	}
 
