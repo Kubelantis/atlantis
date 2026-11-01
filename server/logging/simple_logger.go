@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"fmt"
 
+	"github.com/runatlantis/atlantis/server/utils"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest"
@@ -119,35 +120,49 @@ func (l *StructuredLogger) GetHistory() string {
 }
 
 func (l *StructuredLogger) Debug(format string, a ...any) {
-	l.z.Debugf(format, a...)
-	l.saveToHistory(Debug, format, a...)
+	l.log(Debug, true, format, a...)
 }
 
 func (l *StructuredLogger) Info(format string, a ...any) {
-	l.z.Infof(format, a...)
-	l.saveToHistory(Info, format, a...)
+	l.log(Info, true, format, a...)
 }
 
 func (l *StructuredLogger) Warn(format string, a ...any) {
-	l.z.Warnf(format, a...)
-	l.saveToHistory(Warn, format, a...)
+	l.log(Warn, true, format, a...)
 }
 
 func (l *StructuredLogger) Err(format string, a ...any) {
-	l.z.Errorf(format, a...)
-	l.saveToHistory(Error, format, a...)
+	l.log(Error, true, format, a...)
 }
 
 func (l *StructuredLogger) Log(level LogLevel, format string, a ...any) {
-	switch level {
-	case Debug:
-		l.z.Debugf(format, a...)
-	case Info:
-		l.z.Infof(format, a...)
-	case Warn:
-		l.z.Warnf(format, a...)
-	case Error:
-		l.z.Errorf(format, a...)
+	l.log(level, false, format, a...)
+}
+
+// log formats a message once and writes it, with credentials in URLs
+// redacted: messages often carry command output and errors, and the history
+// is posted to pull requests.
+func (l *StructuredLogger) log(lvl LogLevel, history bool, format string, a ...any) {
+	enabled := l.level.Enabled(lvl.zLevel)
+	history = history && l.keepHistory
+	if !enabled && !history {
+		return
+	}
+	msg := utils.RedactURLCredentials(fmt.Sprintf(format, a...))
+	if enabled {
+		switch lvl {
+		case Debug:
+			l.z.Debug(msg)
+		case Info:
+			l.z.Info(msg)
+		case Warn:
+			l.z.Warn(msg)
+		case Error:
+			l.z.Error(msg)
+		}
+	}
+	if history {
+		fmt.Fprintf(&l.history, "[%s] %s\n", lvl.shortStr, msg)
 	}
 }
 
@@ -159,14 +174,6 @@ func (l *StructuredLogger) SetLevel(lvl LogLevel) {
 
 func (l *StructuredLogger) Flush() error {
 	return l.z.Sync()
-}
-
-func (l *StructuredLogger) saveToHistory(lvl LogLevel, format string, a ...any) {
-	if !l.keepHistory {
-		return
-	}
-	msg := fmt.Sprintf(format, a...)
-	fmt.Fprintf(&l.history, "[%s] %s\n", lvl.shortStr, msg)
 }
 
 // NewNoopLogger creates a logger instance that discards all logs and never

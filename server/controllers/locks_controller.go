@@ -146,7 +146,7 @@ func (l *LocksController) DeleteLock(w http.ResponseWriter, r *http.Request) {
 // level to log at, code is the HTTP response code.
 func (l *LocksController) respond(w http.ResponseWriter, lvl logging.LogLevel, responseCode int, format string, args ...any) {
 	response := fmt.Sprintf(format, args...)
-	l.Logger.Log(lvl, response)
+	l.Logger.Log(lvl, "%s", response)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(responseCode)
 	fmt.Fprintln(w, response) // #nosec G705 -- response body is served as text/plain, not interpreted as HTML

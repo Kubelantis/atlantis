@@ -7,6 +7,7 @@ package vcs
 import (
 	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/runatlantis/atlantis/server/logging"
+	"github.com/runatlantis/atlantis/server/utils"
 )
 
 // ClientProxy proxies calls to the correct VCS client depending on which
@@ -52,8 +53,10 @@ func (d *ClientProxy) GetModifiedFiles(logger logging.SimpleLogging, repo models
 	return d.clients[repo.VCSHost.Type].GetModifiedFiles(logger, repo, pull)
 }
 
+// CreateComment posts a comment with credentials in URLs redacted: comments
+// carry command output and errors, which can include them.
 func (d *ClientProxy) CreateComment(logger logging.SimpleLogging, repo models.Repo, pullNum int, comment string, command string) error {
-	return d.clients[repo.VCSHost.Type].CreateComment(logger, repo, pullNum, comment, command)
+	return d.clients[repo.VCSHost.Type].CreateComment(logger, repo, pullNum, utils.RedactURLCredentials(comment), command)
 }
 
 func (d *ClientProxy) HidePrevCommandComments(logger logging.SimpleLogging, repo models.Repo, pullNum int, command string, dir string) error {
@@ -76,8 +79,10 @@ func (d *ClientProxy) PullIsMergeable(logger logging.SimpleLogging, repo models.
 	return d.clients[repo.VCSHost.Type].PullIsMergeable(logger, repo, pull, vcsstatusname, ignoreVCSStatusNames)
 }
 
+// UpdateStatus sets a commit status with credentials in URLs redacted from
+// its description, which can carry an error.
 func (d *ClientProxy) UpdateStatus(logger logging.SimpleLogging, repo models.Repo, pull models.PullRequest, state models.CommitStatus, src string, description string, url string) error {
-	return d.clients[repo.VCSHost.Type].UpdateStatus(logger, repo, pull, state, src, description, url)
+	return d.clients[repo.VCSHost.Type].UpdateStatus(logger, repo, pull, state, src, utils.RedactURLCredentials(description), url)
 }
 
 func (d *ClientProxy) MergePull(logger logging.SimpleLogging, pull models.PullRequest, pullOptions models.PullRequestOptions) error {
