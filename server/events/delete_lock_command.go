@@ -6,6 +6,8 @@ package events
 import (
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/runatlantis/atlantis/server/core/db"
@@ -87,40 +89,62 @@ func (l *DefaultDeleteLockCommand) DeleteLock(logger logging.SimpleLogging, id s
 	return lock, nil
 }
 
-// DeleteLocksByPull handles deleting all locks for the pull request
+// DeleteLocksByPull discards the plans of every lock the pull holds and
+// releases the locks. As in DeleteLock, the discards are recorded in the
+// shared database first: plan files may be on another replica or in a plan
+// store, where deleting files here cannot reach them. If any discard cannot
+// be recorded no lock is released and no plan deleted, so nothing the user
+// asked to discard becomes applicable; recording a discard again on retry is
+// harmless. Only the locks listed here are released, so a lock the pull takes
+// meanwhile (a plan running at the same time) is kept.
 func (l *DefaultDeleteLockCommand) DeleteLocksByPull(logger logging.SimpleLogging, repo models.Repo, pullNum int) (int, error) {
 	repoFullName := repo.FullName
-	locks, err := l.Locker.UnlockByPull(repo, pullNum)
-	numLocks := len(locks)
+	pull := models.PullRequest{Num: pullNum, BaseRepo: repo}
+	all, err := l.Locker.List()
 	if err != nil {
-		return numLocks, err
+		return 0, err
+	}
+	keys := slices.Sorted(maps.Keys(all))
+	var locks []models.ProjectLock
+	for _, key := range keys {
+		if all[key].Pull.SameAs(pull) {
+			locks = append(locks, all[key])
+		}
 	}
 
-	// Every lock is already released, so keep going past a failure: stopping
-	// would leave the remaining plans applicable.
-	var errs []error
-	for i := range numLocks {
-		lock := locks[i]
-
-		// Record the discard in the shared database before touching files.
-		// With several replicas the plan file may live on another replica's
-		// disk, where DeletePlan cannot reach it; the discarded status is
-		// what stops a later apply from using it.
-		if l.Database != nil && lock.Pull.BaseRepo != (models.Repo{}) {
-			err := l.Database.UpdateProjectStatus(lock.Pull, lock.Workspace, lock.Project.Path, lock.Project.ProjectName, models.DiscardedPlanStatus)
-			switch {
-			case errors.Is(err, db.ErrProjectNotFound):
-				// Apply needs a recorded plan status, so there is nothing
-				// another replica could apply.
-				logger.Debug("no plan status to discard for dir %q workspace %q project %q", lock.Project.Path, lock.Workspace, lock.Project.ProjectName)
-			case err != nil:
-				logger.Warn("Failed to mark plan as discarded: %s", err)
-				errs = append(errs, err)
-			}
+	for _, lock := range locks {
+		// Locks from before BaseRepo was recorded cannot be matched to a status.
+		if l.Database == nil || lock.Pull.BaseRepo == (models.Repo{}) {
+			continue
 		}
+		err := l.Database.UpdateProjectStatus(lock.Pull, lock.Workspace, lock.Project.Path, lock.Project.ProjectName, models.DiscardedPlanStatus)
+		switch {
+		case errors.Is(err, db.ErrProjectNotFound):
+			// Apply needs a recorded plan status, so there is nothing
+			// another replica could apply.
+			logger.Debug("no plan status to discard for dir %q workspace %q project %q", lock.Project.Path, lock.Workspace, lock.Project.ProjectName)
+		case err != nil:
+			return 0, fmt.Errorf("recording the plan for dir %q workspace %q as discarded: %w; no locks were released, try again", lock.Project.Path, lock.Workspace, err)
+		}
+	}
 
-		err := l.WorkingDir.DeletePlan(logger, lock.Pull.BaseRepo, lock.Pull, lock.Workspace, lock.Project.Path, lock.Project.ProjectName)
+	// Every plan is discarded now, so keep going past a failure: the
+	// remaining locks can be released safely.
+	var errs []error
+	numLocks := 0
+	for _, lock := range locks {
+		released, err := l.Locker.UnlockIfOwnedByPull(lock.Project, lock.Workspace, lock.Pull)
 		if err != nil {
+			logger.Warn("Failed to release lock for dir %q workspace %q: %s", lock.Project.Path, lock.Workspace, err)
+			errs = append(errs, err)
+			continue
+		}
+		if released == nil {
+			// Released, or taken by another pull, since it was listed.
+			continue
+		}
+		numLocks++
+		if err := l.WorkingDir.DeletePlan(logger, lock.Pull.BaseRepo, lock.Pull, lock.Workspace, lock.Project.Path, lock.Project.ProjectName); err != nil {
 			logger.Warn("Failed to delete plan: %s", err)
 			errs = append(errs, err)
 		}
