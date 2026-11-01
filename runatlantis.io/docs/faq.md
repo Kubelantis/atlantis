@@ -16,7 +16,7 @@ A: Atlantis server can easily be run under the supervision of an init system lik
 
 Atlantis stores locks and pull request status in the Kubernetes API (Leases and `PullStatus` resources), so any number of replicas can run at once. Each pull request is handled by one replica; webhooks that reach another replica are forwarded to it. See [Kubernetes-native Atlantis](https://github.com/App-First-Step/katlantis/blob/master/docs/kubernetes-native.md) and the Helm chart.
 
-Clones, plans and job logs are kept on each replica's volume by default, and applies are routed to the replica that made the plan. To make plans and completed job logs available to every replica, and keep them if a replica is lost, enable `--enable-external-stores` with an S3-compatible `plan_store` and `log_store`. If a plan is lost anyway, run `atlantis plan` again: `atlantis apply` refuses to run without a matching plan.
+Clones, plans and job logs are kept on each replica's volume by default, and applies are routed to the replica that made the plan. A volume keeps plans usable only across a quick restart (see [`--cluster-plan-holder-wait-seconds`](server-configuration.md#cluster-plan-holder-wait-seconds)); a long drain during a rolling update, a reschedule or a scale-down leaves them out of reach. To make plans and completed job logs available to every replica, and keep them if a replica is lost, enable `--enable-external-stores` with an S3-compatible `plan_store` and `log_store`; with more than one replica, do this for plans. If a plan is lost anyway, run `atlantis plan` again: `atlantis apply` refuses to run without a matching plan.
 
 **Q: How to add SSL to Atlantis server?**
 

@@ -134,10 +134,13 @@ networkPolicy:
 # move to other replicas immediately; this only bounds in-flight work.
 terminationGracePeriodSeconds: 3600
 
-# -- Per-replica volume for clones and plan files. With persistence a
-# restarted replica keeps its plans; applies are routed to the replica that
-# made the plan. Configure an S3 plan store (external_stores) to also survive
-# losing a replica's volume or scaling down.
+# -- Per-replica volume for clones and plan files. Applies are routed to the
+# replica that made the plan, so with persistence a replica that restarts
+# within --cluster-plan-holder-wait-seconds keeps its plans usable. It does not
+# protect plans when the replica is away longer (a long drain during a rolling
+# update, a reschedule, a node failure) or is scaled away, which deletes its
+# volume. With more than one replica, configure an S3 plan store
+# (external_stores) so any replica can apply.
 persistence:
   enabled: true
   size: 20Gi

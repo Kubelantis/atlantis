@@ -2,10 +2,12 @@
 {{- fail "vcsSecretName is required: create a Secret with your ATLANTIS_* VCS credentials" }}
 {{- end }}
 # A StatefulSet gives every replica a stable name (its identity in the
-# cluster) and its own volume. A restarted replica comes back with the same
-# identity and the same clones and plan files, so the pulls it owned and the
-# plans it made are still there; applies wait for it (see
-# --cluster-plan-holder-wait-seconds) instead of failing on another replica.
+# cluster) and its own volume. A replica that restarts quickly comes back with
+# the same identity, clones and plan files, and applies of its plans wait for
+# it (see --cluster-plan-holder-wait-seconds). Plans on a replica's volume are
+# lost to applies when it is away longer than that wait (a long drain during a
+# rolling update, a reschedule, a node failure) or is scaled away; with more
+# than one replica, configure a shared plan store (external_stores).
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
