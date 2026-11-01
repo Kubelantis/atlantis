@@ -169,7 +169,7 @@ func (p *PullClosedExecutor) CleanUpPull(logger logging.SimpleLogging, repo mode
 	// Finally, delete locks. We do this last because when someone
 	// unlocks a project, right now we don't actually delete the plan
 	// so we might have plans laying around but no locks.
-	locks, err := p.Locker.UnlockByPull(repo.FullName, pull.Num)
+	locks, err := p.Locker.UnlockByPull(repo, pull.Num)
 	if err != nil {
 		return fmt.Errorf("cleaning up locks: %w", err)
 	}

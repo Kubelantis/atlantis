@@ -1864,12 +1864,12 @@ func (l failUnlockByPullLocker) List() (map[string]models.ProjectLock, error) {
 	return nil, nil
 }
 
-func (l failUnlockByPullLocker) UnlockByPull(string, int) ([]models.ProjectLock, error) {
+func (l failUnlockByPullLocker) UnlockByPull(models.Repo, int) ([]models.ProjectLock, error) {
 	l.t.Fatalf("no-project cleanup must not call UnlockByPull")
 	return nil, nil
 }
 
-func (l failUnlockByPullLocker) UnlockIfOwnedByPull(models.Project, string, int) (*models.ProjectLock, error) {
+func (l failUnlockByPullLocker) UnlockIfOwnedByPull(models.Project, string, models.PullRequest) (*models.ProjectLock, error) {
 	return nil, nil
 }
 
@@ -2079,7 +2079,7 @@ func TestRunUnlockCommand_VCSComment(t *testing.T) {
 				&events.CommentCommand{Name: command.Unlock})
 
 			deleteLockCommand.VerifyWasCalledOnce().DeleteLocksByPull(Any[logging.SimpleLogging](),
-				Eq(testdata.GithubRepo.FullName), Eq(testdata.Pull.Num))
+				Eq(testdata.GithubRepo), Eq(testdata.Pull.Num))
 			vcsClient.VerifyWasCalledOnce().CreateComment(
 				Any[logging.SimpleLogging](), Eq(testdata.GithubRepo), Eq(testdata.Pull.Num),
 				Eq("All Atlantis locks for this PR have been unlocked and plans discarded"), Eq("unlock"))
@@ -2100,7 +2100,7 @@ func TestRunUnlockCommandFail_VCSComment(t *testing.T) {
 		Eq(testdata.Pull.Num))).ThenReturn(pull, nil)
 	When(eventParsing.ParseGithubPull(Any[logging.SimpleLogging](), Eq(pull))).ThenReturn(modelPull, modelPull.BaseRepo,
 		testdata.GithubRepo, nil)
-	When(deleteLockCommand.DeleteLocksByPull(Any[logging.SimpleLogging](), Eq(testdata.GithubRepo.FullName),
+	When(deleteLockCommand.DeleteLocksByPull(Any[logging.SimpleLogging](), Eq(testdata.GithubRepo),
 		Eq(testdata.Pull.Num))).ThenReturn(0, errors.New("err"))
 
 	ch.RunCommentCommand(testdata.GithubRepo, &testdata.GithubRepo, nil, testdata.User, testdata.Pull.Num,
@@ -2124,7 +2124,7 @@ func TestRunUnlockCommandFail_DisableUnlockLabel(t *testing.T) {
 		Eq(testdata.Pull.Num))).ThenReturn(pull, nil)
 	When(eventParsing.ParseGithubPull(Any[logging.SimpleLogging](), Eq(pull))).ThenReturn(modelPull, modelPull.BaseRepo,
 		testdata.GithubRepo, nil)
-	When(deleteLockCommand.DeleteLocksByPull(Any[logging.SimpleLogging](), Eq(testdata.GithubRepo.FullName),
+	When(deleteLockCommand.DeleteLocksByPull(Any[logging.SimpleLogging](), Eq(testdata.GithubRepo),
 		Eq(testdata.Pull.Num))).ThenReturn(0, errors.New("err"))
 	When(ch.VCSClient.GetPullLabels(Any[logging.SimpleLogging](), Eq(testdata.GithubRepo),
 		Eq(modelPull))).ThenReturn([]string{doNotUnlock, "need-help"}, nil)
@@ -2148,7 +2148,7 @@ func TestRunUnlockCommandFail_GetLabelsFail(t *testing.T) {
 		Eq(testdata.Pull.Num))).ThenReturn(pull, nil)
 	When(eventParsing.ParseGithubPull(Any[logging.SimpleLogging](), Eq(pull))).ThenReturn(modelPull, modelPull.BaseRepo,
 		testdata.GithubRepo, nil)
-	When(deleteLockCommand.DeleteLocksByPull(Any[logging.SimpleLogging](), Eq(testdata.GithubRepo.FullName),
+	When(deleteLockCommand.DeleteLocksByPull(Any[logging.SimpleLogging](), Eq(testdata.GithubRepo),
 		Eq(testdata.Pull.Num))).ThenReturn(0, errors.New("err"))
 	When(ch.VCSClient.GetPullLabels(Any[logging.SimpleLogging](), Eq(testdata.GithubRepo),
 		Eq(modelPull))).ThenReturn(nil, errors.New("err"))
@@ -2174,7 +2174,7 @@ func TestRunUnlockCommandDoesntRetrieveLabelsIfDisableUnlockLabelNotSet(t *testi
 		Eq(testdata.Pull.Num))).ThenReturn(pull, nil)
 	When(eventParsing.ParseGithubPull(Any[logging.SimpleLogging](), Eq(pull))).ThenReturn(modelPull, modelPull.BaseRepo,
 		testdata.GithubRepo, nil)
-	When(deleteLockCommand.DeleteLocksByPull(Any[logging.SimpleLogging](), Eq(testdata.GithubRepo.FullName),
+	When(deleteLockCommand.DeleteLocksByPull(Any[logging.SimpleLogging](), Eq(testdata.GithubRepo),
 		Eq(testdata.Pull.Num))).ThenReturn(0, errors.New("err"))
 	When(ch.VCSClient.GetPullLabels(Any[logging.SimpleLogging](), Eq(testdata.GithubRepo),
 		Eq(modelPull))).ThenReturn([]string{doNotUnlock, "need-help"}, nil)

@@ -147,14 +147,14 @@ func Run(t *testing.T, newDB Factory) {
 		_, _, err := d.TryLock(newLock(1, project, workspace))
 		Ok(t, err)
 
-		l, err := d.UnlockIfOwnedByPull(project, workspace, 2)
+		l, err := d.UnlockIfOwnedByPull(project, workspace, newLock(2, project, workspace).Pull)
 		Ok(t, err)
 		Assert(t, l == nil, "must not unlock another pull's lock")
 		l, err = d.GetLock(project, workspace)
 		Ok(t, err)
 		Assert(t, l != nil, "lock must remain")
 
-		l, err = d.UnlockIfOwnedByPull(project, workspace, 1)
+		l, err = d.UnlockIfOwnedByPull(project, workspace, newLock(1, project, workspace).Pull)
 		Ok(t, err)
 		Equals(t, 1, l.Pull.Num)
 		l, err = d.GetLock(project, workspace)
@@ -194,13 +194,39 @@ func Run(t *testing.T, newDB Factory) {
 		_, _, err = d.TryLock(newLock(2, project, "staging"))
 		Ok(t, err)
 
-		unlocked, err := d.UnlockByPull("owner/repo", 1)
+		unlocked, err := d.UnlockByPull(models.Repo{FullName: "owner/repo"}, 1)
 		Ok(t, err)
 		Equals(t, 2, len(unlocked))
 		locks, err := d.List()
 		Ok(t, err)
 		Equals(t, 1, len(locks))
 		Equals(t, 2, locks[0].Pull.Num)
+	})
+
+	// One server can serve two VCS providers that both have owner/repo, so
+	// a pull is identified by host as well as repo name and number.
+	t.Run("unlocking ignores the same pull number on another host", func(t *testing.T) {
+		d := newDB(t)
+		github := models.Repo{FullName: "owner/repo", VCSHost: models.VCSHost{Hostname: "github.com"}}
+		gitlab := models.Repo{FullName: "owner/repo", VCSHost: models.VCSHost{Hostname: "gitlab.com"}}
+		lock := newLock(1, project, workspace)
+		lock.Pull.BaseRepo = github
+		_, _, err := d.TryLock(lock)
+		Ok(t, err)
+
+		l, err := d.UnlockIfOwnedByPull(project, workspace, models.PullRequest{Num: 1, BaseRepo: gitlab})
+		Ok(t, err)
+		Assert(t, l == nil, "unlocked the lock of the same pull number on another host")
+		unlocked, err := d.UnlockByPull(gitlab, 1)
+		Ok(t, err)
+		Equals(t, 0, len(unlocked))
+		l, err = d.GetLock(project, workspace)
+		Ok(t, err)
+		Assert(t, l != nil, "lock must remain")
+
+		unlocked, err = d.UnlockByPull(github, 1)
+		Ok(t, err)
+		Equals(t, 1, len(unlocked))
 	})
 
 	t.Run("pull status lifecycle", func(t *testing.T) {

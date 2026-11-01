@@ -64,7 +64,7 @@ func (r *replicaRunner) RunCommentCommandWithContext(_ context.Context, _ models
 	case command.Plan:
 		err = r.plan(*pull, user)
 	case command.Unlock:
-		_, err = r.unlock.DeleteLocksByPull(r.logger, pull.BaseRepo.FullName, pullNum)
+		_, err = r.unlock.DeleteLocksByPull(r.logger, pull.BaseRepo, pullNum)
 	case command.Apply:
 		err = r.validator.ValidateProjectPlanStatus(command.ProjectContext{Pull: *pull, Workspace: "default", RepoRelDir: "."})
 	}

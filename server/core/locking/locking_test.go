@@ -80,20 +80,20 @@ func TestUnlock(t *testing.T) {
 func TestUnlockIfOwnedByPull_Err(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	database := mocks.NewMockDatabase(ctrl)
-	database.EXPECT().UnlockIfOwnedByPull(project, workspace, 1).Return(nil, errExpected)
+	database.EXPECT().UnlockIfOwnedByPull(project, workspace, models.PullRequest{Num: 1}).Return(nil, errExpected)
 	l := locking.NewClient(database)
 
-	_, err := l.UnlockIfOwnedByPull(project, workspace, 1)
+	_, err := l.UnlockIfOwnedByPull(project, workspace, models.PullRequest{Num: 1})
 	Equals(t, errExpected, err)
 }
 
 func TestUnlockIfOwnedByPull(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	database := mocks.NewMockDatabase(ctrl)
-	database.EXPECT().UnlockIfOwnedByPull(project, workspace, 1).Return(&pl, nil)
+	database.EXPECT().UnlockIfOwnedByPull(project, workspace, models.PullRequest{Num: 1}).Return(&pl, nil)
 	l := locking.NewClient(database)
 
-	lock, err := l.UnlockIfOwnedByPull(project, workspace, 1)
+	lock, err := l.UnlockIfOwnedByPull(project, workspace, models.PullRequest{Num: 1})
 	Ok(t, err)
 	Equals(t, &pl, lock)
 }
@@ -103,10 +103,10 @@ func TestUnlockIfOwnedByPull_SlashfulRepo(t *testing.T) {
 	database := mocks.NewMockDatabase(ctrl)
 	slashfulProject := models.NewProject("group/subgroup/repo", "terraform", "prod")
 	slashfulLock := models.ProjectLock{Project: slashfulProject, Workspace: "default"}
-	database.EXPECT().UnlockIfOwnedByPull(slashfulProject, "default", 1).Return(&slashfulLock, nil)
+	database.EXPECT().UnlockIfOwnedByPull(slashfulProject, "default", models.PullRequest{Num: 1}).Return(&slashfulLock, nil)
 	l := locking.NewClient(database)
 
-	lock, err := l.UnlockIfOwnedByPull(slashfulProject, "default", 1)
+	lock, err := l.UnlockIfOwnedByPull(slashfulProject, "default", models.PullRequest{Num: 1})
 	Ok(t, err)
 	Equals(t, &slashfulLock, lock)
 }
@@ -135,9 +135,9 @@ func TestList(t *testing.T) {
 func TestUnlockByPull(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	database := mocks.NewMockDatabase(ctrl)
-	database.EXPECT().UnlockByPull("owner/repo", 1).Return(nil, errExpected)
+	database.EXPECT().UnlockByPull(models.Repo{FullName: "owner/repo"}, 1).Return(nil, errExpected)
 	l := locking.NewClient(database)
-	_, err := l.UnlockByPull("owner/repo", 1)
+	_, err := l.UnlockByPull(models.Repo{FullName: "owner/repo"}, 1)
 	Equals(t, errExpected, err)
 }
 
@@ -193,13 +193,13 @@ func TestList_NoOpLocker(t *testing.T) {
 
 func TestUnlockByPull_NoOpLocker(t *testing.T) {
 	l := locking.NewNoOpLocker()
-	_, err := l.UnlockByPull("owner/repo", 1)
+	_, err := l.UnlockByPull(models.Repo{FullName: "owner/repo"}, 1)
 	Ok(t, err)
 }
 
 func TestUnlockIfOwnedByPull_NoOpLocker(t *testing.T) {
 	l := locking.NewNoOpLocker()
-	lock, err := l.UnlockIfOwnedByPull(project, workspace, 1)
+	lock, err := l.UnlockIfOwnedByPull(project, workspace, models.PullRequest{Num: 1})
 	Ok(t, err)
 	var expected *models.ProjectLock
 	Equals(t, expected, lock)
