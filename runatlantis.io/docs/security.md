@@ -95,6 +95,8 @@ It is highly recommended to enable authentication in the web service. Enable Bas
 
 You can also pass these as environment variables `ATLANTIS_WEB_BASIC_AUTH=true` `ATLANTIS_WEB_USERNAME=yourUsername` and `ATLANTIS_WEB_PASSWORD=yourPassword`.
 
+Atlantis logs each failed login at `warn`, with the source address and the username tried. It logs each request that can change state at `info`, with the method, path, status, source address and who made it: the web user, `api` for the API (its token is shared, so it doesn't identify anyone), or `anonymous`. That covers deleting a lock, the global apply lock, GitHub App setup and every `/api/` call. The source address is the connection's peer, so behind a proxy or load balancer it's the proxy's address.
+
 :::tip Tip
 We do encourage the usage of complex passwords in order to prevent basic bruteforcing attacks.
 :::
