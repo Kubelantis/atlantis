@@ -43,6 +43,10 @@ const (
 	// maxCompleteFlushAttempts bounds retries for a finished job, so a
 	// permanently failing volume cannot hold its output in memory forever.
 	maxCompleteFlushAttempts = 10
+
+	// deletedJobTTL is how long DeletePull remembers the jobs it deleted, so
+	// output still arriving from them is dropped. Job IDs are not reused.
+	deletedJobTTL = time.Hour
 )
 
 // FileLogStore persists job output as plain-text files on local disk, laid
@@ -59,9 +63,12 @@ type FileLogStore struct {
 	root   string
 	logger logging.SimpleLogging
 
-	mu     sync.Mutex
-	jobs   map[string]*pendingLog
-	closed bool
+	mu   sync.Mutex
+	jobs map[string]*pendingLog
+	// deleted holds the jobs of pull requests deleted by DeletePull, with
+	// when; their later output is dropped (see deletedJobTTL).
+	deleted map[string]time.Time
+	closed  bool
 
 	// flushMu serializes file I/O: flushes, DeletePull and Close. It is always
 	// taken before mu, never while holding it.
@@ -103,12 +110,13 @@ func NewFileLogStore(root string, flushInterval time.Duration, logger logging.Si
 		return nil, fmt.Errorf("creating job log dir %q: %w", root, err)
 	}
 	s := &FileLogStore{
-		root:   root,
-		logger: logger,
-		jobs:   map[string]*pendingLog{},
-		kick:   make(chan struct{}, 1),
-		stop:   make(chan struct{}),
-		done:   make(chan struct{}),
+		root:    root,
+		logger:  logger,
+		jobs:    map[string]*pendingLog{},
+		deleted: map[string]time.Time{},
+		kick:    make(chan struct{}, 1),
+		stop:    make(chan struct{}),
+		done:    make(chan struct{}),
 	}
 	go s.run(flushInterval)
 	return s, nil
@@ -119,6 +127,11 @@ func (s *FileLogStore) Write(pull Pull, jobID, line string) {
 		return
 	}
 	s.mu.Lock()
+	if _, gone := s.deleted[jobID]; gone {
+		// Still running when its pull request was deleted.
+		s.mu.Unlock()
+		return
+	}
 	p, ok := s.jobs[jobID]
 	if !ok {
 		p = &pendingLog{pull: pull}
@@ -211,10 +224,12 @@ func (s *FileLogStore) DeletePull(pull Pull) error {
 
 	s.mu.Lock()
 	var dropped []*pendingLog
+	var deletedIDs []string
 	for jobID, p := range s.jobs {
 		if p.pull == pull {
 			delete(s.jobs, jobID)
 			dropped = append(dropped, p)
+			deletedIDs = append(deletedIDs, jobID)
 		}
 	}
 	s.mu.Unlock()
@@ -224,7 +239,8 @@ func (s *FileLogStore) DeletePull(pull Pull) error {
 		}
 	}
 
-	s.indexDeleteUnder(dir)
+	deletedIDs = append(deletedIDs, s.indexDeleteUnder(dir)...)
+	s.markDeleted(deletedIDs)
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("deleting job logs for %s#%d: %w", pull.RepoFullName, pull.Num, err)
 	}
@@ -480,14 +496,43 @@ func (s *FileLogStore) indexPut(jobID, path string) {
 	s.indexMu.Unlock()
 }
 
-// indexDeleteUnder drops every entry whose file is under dir.
-func (s *FileLogStore) indexDeleteUnder(dir string) {
+// indexDeleteUnder drops every entry whose file is under dir and returns
+// their job IDs.
+func (s *FileLogStore) indexDeleteUnder(dir string) []string {
 	prefix := dir + string(filepath.Separator)
+	var ids []string
 	s.indexMu.Lock()
 	for id, path := range s.index {
 		if strings.HasPrefix(path, prefix) {
 			delete(s.index, id)
+			ids = append(ids, id)
 		}
 	}
 	s.indexMu.Unlock()
+	return ids
+}
+
+// markDeleted records jobs of a deleted pull request and forgets those
+// recorded longer than deletedJobTTL ago.
+func (s *FileLogStore) markDeleted(ids []string) {
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, at := range s.deleted {
+		if now.Sub(at) > deletedJobTTL {
+			delete(s.deleted, id)
+		}
+	}
+	for _, id := range ids {
+		s.deleted[id] = now
+	}
+}
+
+// jobDeleted reports whether jobID belongs to a pull request deleted by
+// DeletePull.
+func (s *FileLogStore) jobDeleted(jobID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, gone := s.deleted[jobID]
+	return gone
 }
