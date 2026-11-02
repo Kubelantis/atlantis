@@ -35,6 +35,7 @@ type Locker interface {
 	TryLock(p models.Project, workspace string, pull models.PullRequest, user models.User) (TryLockResponse, error)
 	Unlock(key string) (*models.ProjectLock, error)
 	UnlockIfOwnedByPull(project models.Project, workspace string, pull models.PullRequest) (*models.ProjectLock, error)
+	UnlockExact(lock models.ProjectLock) (*models.ProjectLock, error)
 	List() (map[string]models.ProjectLock, error)
 	UnlockByPull(repo models.Repo, pullNum int) ([]models.ProjectLock, error)
 	GetLock(key string) (*models.ProjectLock, error)
@@ -81,6 +82,11 @@ func (c *Client) Unlock(key string) (*models.ProjectLock, error) {
 // UnlockIfOwnedByPull unlocks project and workspace only when pull still owns it.
 func (c *Client) UnlockIfOwnedByPull(project models.Project, workspace string, pull models.PullRequest) (*models.ProjectLock, error) {
 	return c.database.UnlockIfOwnedByPull(project, workspace, pull)
+}
+
+// UnlockExact unlocks lock only if the stored lock is the same acquisition.
+func (c *Client) UnlockExact(lock models.ProjectLock) (*models.ProjectLock, error) {
+	return c.database.UnlockExact(lock)
 }
 
 // List returns a map of all locks with their lock key as the map key.
@@ -162,6 +168,11 @@ func (c *NoOpLocker) Unlock(_ string) (*models.ProjectLock, error) {
 
 // UnlockIfOwnedByPull is a no-op for commands that do not use repository locks.
 func (c *NoOpLocker) UnlockIfOwnedByPull(_ models.Project, _ string, _ models.PullRequest) (*models.ProjectLock, error) {
+	return nil, nil
+}
+
+// UnlockExact is a no-op for the NoOpLocker.
+func (c *NoOpLocker) UnlockExact(_ models.ProjectLock) (*models.ProjectLock, error) {
 	return nil, nil
 }
 

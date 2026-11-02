@@ -302,3 +302,60 @@ func TestWorkingDirLocker_ProjectLocksStillUseExactWorkspaceDirProjectIdentity(t
 	_, err = locker.TryLock("group/repo/1", 2, "default", "dir", "other", command.Apply, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 }
+
+// Unlock releases the pull's project locks, so it must not run while any
+// command of the pull holds a workspace: import and state rm hold no pull
+// lock, and releasing their project lock would let another pull lock the
+// project while they still change its state.
+func TestWorkingDirLocker_UnlockWaitsForAnyRunningCommand(t *testing.T) {
+	for _, name := range []command.Name{command.Import, command.State, command.Plan, command.Apply, command.PolicyCheck} {
+		t.Run(name.String(), func(t *testing.T) {
+			locker := events.NewDefaultWorkingDirLocker()
+			unlockWs, err := locker.TryLock(repo, 1, workspace, path, projectName, name, events.WorkingDirLockMetadata{})
+			Ok(t, err)
+
+			_, err = locker.TryLockPull(repo, 1, command.Unlock, events.WorkingDirLockMetadata{})
+			ErrContains(t, "currently locked", err)
+
+			unlockWs()
+			unlockPull, err := locker.TryLockPull(repo, 1, command.Unlock, events.WorkingDirLockMetadata{})
+			Ok(t, err)
+			unlockPull()
+		})
+	}
+}
+
+// A command started while unlock runs could have its project lock released
+// by that unlock, so it waits for the unlock to finish.
+func TestWorkingDirLocker_CommandsWaitForUnlock(t *testing.T) {
+	locker := events.NewDefaultWorkingDirLocker()
+	unlockPull, err := locker.TryLockPull(repo, 1, command.Unlock, events.WorkingDirLockMetadata{})
+	Ok(t, err)
+
+	for _, name := range []command.Name{command.Import, command.State, command.Plan, command.Apply} {
+		_, err = locker.TryLock(repo, 1, workspace, path, projectName, name, events.WorkingDirLockMetadata{})
+		ErrContains(t, "currently locked by \"unlock\"", err)
+	}
+	// Other pulls are unaffected.
+	unlockOther, err := locker.TryLock(repo, 2, workspace, path, projectName, command.Import, events.WorkingDirLockMetadata{})
+	Ok(t, err)
+	unlockOther()
+
+	unlockPull()
+	unlockWs, err := locker.TryLock(repo, 1, workspace, path, projectName, command.Import, events.WorkingDirLockMetadata{})
+	Ok(t, err)
+	unlockWs()
+}
+
+// Plan and apply lock their projects' workspaces inside their own pull lock.
+func TestWorkingDirLocker_PlanAndApplyStillLockWorkspacesInsideTheirPullLock(t *testing.T) {
+	for _, name := range []command.Name{command.Plan, command.Apply} {
+		locker := events.NewDefaultWorkingDirLocker()
+		unlockPull, err := locker.TryLockPull(repo, 1, name, events.WorkingDirLockMetadata{})
+		Ok(t, err)
+		unlockWs, err := locker.TryLock(repo, 1, workspace, path, projectName, name, events.WorkingDirLockMetadata{})
+		Ok(t, err)
+		unlockWs()
+		unlockPull()
+	}
+}

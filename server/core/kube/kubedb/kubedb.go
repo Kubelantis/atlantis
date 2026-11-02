@@ -277,6 +277,41 @@ func (k *KubeDB) List() ([]models.ProjectLock, error) {
 	return locks, nil
 }
 
+// UnlockExact implements db.Database.
+func (k *KubeDB) UnlockExact(want models.ProjectLock) (*models.ProjectLock, error) {
+	ctx, cancel := k.ctx()
+	defer cancel()
+	name, _ := k.lockName(want.Project, want.Workspace)
+	var found *models.ProjectLock
+	err := retry.RetryOnConflict(conflictBackoff, func() error {
+		found = nil
+		var lease coordinationv1.Lease
+		err := k.client().Get(ctx, client.ObjectKey{Namespace: k.ns, Name: name}, &lease)
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		l, err := decodeLock(&lease)
+		if err != nil {
+			return err
+		}
+		if !l.Pull.SameAs(want.Pull) || !l.Time.Equal(want.Time) {
+			return nil
+		}
+		if err := k.deleteExact(ctx, &lease); err != nil {
+			return err
+		}
+		found = &l
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("unlocking: %w", err)
+	}
+	return found, nil
+}
+
 // GetLock implements db.Database.
 func (k *KubeDB) GetLock(p models.Project, workspace string) (*models.ProjectLock, error) {
 	ctx, cancel := k.ctx()

@@ -116,6 +116,21 @@ func (mr *MockLockerMockRecorder) UnlockByPull(repo, pullNum any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnlockByPull", reflect.TypeOf((*MockLocker)(nil).UnlockByPull), repo, pullNum)
 }
 
+// UnlockExact mocks base method.
+func (m *MockLocker) UnlockExact(lock models.ProjectLock) (*models.ProjectLock, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UnlockExact", lock)
+	ret0, _ := ret[0].(*models.ProjectLock)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// UnlockExact indicates an expected call of UnlockExact.
+func (mr *MockLockerMockRecorder) UnlockExact(lock any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnlockExact", reflect.TypeOf((*MockLocker)(nil).UnlockExact), lock)
+}
+
 // UnlockIfOwnedByPull mocks base method.
 func (m *MockLocker) UnlockIfOwnedByPull(project models.Project, workspace string, pull models.PullRequest) (*models.ProjectLock, error) {
 	m.ctrl.T.Helper()

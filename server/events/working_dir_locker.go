@@ -74,6 +74,11 @@ func (d *DefaultWorkingDirLocker) TryLock(repoFullName string, pullNum int, work
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
+	// Unlock releases the pull's project locks, so no command of the pull
+	// starts while it runs; see TryLockPull.
+	if currentLock, exists := d.locks[d.pullKey(repoFullName, pullNum)]; exists && currentLock.Command == command.Unlock {
+		return func() {}, d.pullLockError(repoFullName, pullNum, cmdName, currentLock)
+	}
 	workspaceKey := d.workspaceKey(repoFullName, pullNum, workspace, path, projectName)
 	if currentLock, exists := d.locks[workspaceKey]; exists {
 		return func() {}, &workingDirLockError{
@@ -96,9 +101,19 @@ func (d *DefaultWorkingDirLocker) TryLockPull(repoFullName string, pullNum int, 
 	if currentLock, exists := d.locks[pullKey]; exists {
 		return func() {}, d.pullLockError(repoFullName, pullNum, cmdName, currentLock)
 	}
-	currentLock, exists := d.findCommandLock(repoFullName, pullNum, command.Plan, metadata.HeadCommit)
-	if !exists && metadata.HeadCommit != "" {
-		currentLock, exists = d.findCommandLock(repoFullName, pullNum, command.Plan, "")
+	var currentLock workingDirLock
+	var exists bool
+	if cmdName == command.Unlock {
+		// Unlock releases the pull's project locks, so it waits for every
+		// command of the pull: import and state rm hold only workspace locks,
+		// and releasing their project lock would let another pull lock the
+		// project while they still change its state.
+		currentLock, exists = d.findAnyLock(repoFullName, pullNum)
+	} else {
+		currentLock, exists = d.findCommandLock(repoFullName, pullNum, command.Plan, metadata.HeadCommit)
+		if !exists && metadata.HeadCommit != "" {
+			currentLock, exists = d.findCommandLock(repoFullName, pullNum, command.Plan, "")
+		}
 	}
 	if exists {
 		return func() {}, d.pullLockError(repoFullName, pullNum, cmdName, currentLock)
@@ -123,6 +138,21 @@ func (d *DefaultWorkingDirLocker) findCommandLock(repoFullName string, pullNum i
 	var matchKey string
 	for key, currentLock := range d.locks {
 		if strings.HasPrefix(key, prefix) && currentLock.Command == cmdName && (headCommit == "" || currentLock.HeadCommit == headCommit) && (matchKey == "" || key < matchKey) {
+			match = currentLock
+			matchKey = key
+		}
+	}
+	return match, matchKey != ""
+}
+
+// findAnyLock returns the pull's workspace lock with the lowest key, if any.
+func (d *DefaultWorkingDirLocker) findAnyLock(repoFullName string, pullNum int) (workingDirLock, bool) {
+	prefix := d.pullLockPrefix(repoFullName, pullNum)
+	pullKey := d.pullKey(repoFullName, pullNum)
+	var match workingDirLock
+	var matchKey string
+	for key, currentLock := range d.locks {
+		if key != pullKey && strings.HasPrefix(key, prefix) && (matchKey == "" || key < matchKey) {
 			match = currentLock
 			matchKey = key
 		}
