@@ -31,9 +31,17 @@ import (
 )
 
 var (
-	once    sync.Once
+	once sync.Once
+	// lifecycle serializes starting and stopping env: envtest starts etcd
+	// and the API server one after the other without synchronization, so a
+	// stop during the start could miss a process it is still creating.
+	lifecycle sync.Mutex
+	// env and stopped, set by the first stop, are guarded by lifecycle.
 	env     *envtest.Environment
-	stopEnv sync.Once
+	stopped bool
+	// envStart and envStop start and stop env; tests replace them.
+	envStart = (*envtest.Environment).Start
+	envStop  = (*envtest.Environment).Stop
 	// running is set by Run; Client refuses to start the server without it.
 	running atomic.Bool
 	shared  client.Client
@@ -56,12 +64,11 @@ func Client(t testing.TB) (client.Client, string) {
 	once.Do(func() {
 		_, file, _, _ := runtime.Caller(0)
 		root := filepath.Join(filepath.Dir(file), "..", "..", "..", "..")
-		env = &envtest.Environment{
+		stopOnSignal()
+		cfg, err := start(&envtest.Environment{
 			CRDDirectoryPaths:     []string{filepath.Join(root, "deploy", "crds")},
 			ErrorIfCRDPathMissing: true,
-		}
-		stopOnSignal()
-		cfg, err := env.Start()
+		})
 		restCfg = cfg
 		if err != nil {
 			initErr = fmt.Errorf("starting envtest: %w", err)
@@ -95,17 +102,35 @@ func Run(m *testing.M) {
 	m.Run()
 }
 
-// stop stops the shared API server and etcd once.
+// start starts e as env unless env was already stopped. A start that fails
+// part-way may leave processes running; stop stops them.
+func start(e *envtest.Environment) (*rest.Config, error) {
+	lifecycle.Lock()
+	defer lifecycle.Unlock()
+	if stopped {
+		return nil, fmt.Errorf("the test binary is shutting down")
+	}
+	env = e
+	return envStart(env)
+}
+
+// stop stops the shared API server and etcd once, after any start in
+// progress has finished.
 func stop() {
-	stopEnv.Do(func() {
-		if env != nil {
-			_ = env.Stop()
-		}
-	})
+	lifecycle.Lock()
+	defer lifecycle.Unlock()
+	if stopped {
+		return
+	}
+	stopped = true
+	if env != nil {
+		_ = envStop(env)
+	}
 }
 
 // stopOnSignal stops them too when the test binary is interrupted or
-// terminated, which would otherwise leave them running.
+// terminated, which would otherwise leave them running. A signal during
+// startup waits for it to finish, then stops whatever it started.
 func stopOnSignal() {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
