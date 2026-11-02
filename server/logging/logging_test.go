@@ -23,3 +23,13 @@ func TestStructuredLoggerSavesHistory(t *testing.T) {
 
 	assert.Equal(t, expectedStr, historyLogger.GetHistory())
 }
+
+// Messages often carry command output and errors, and the history is posted
+// to pull requests, so credentials in URLs are redacted.
+func TestStructuredLoggerRedactsURLCredentials(t *testing.T) {
+	historyLogger := logging.NewNoopLogger(t).WithHistory()
+
+	historyLogger.Err("terraform init: %s", "Error: git::https://user:s3cret@github.com/org/mod.git")
+
+	assert.Equal(t, "[EROR] terraform init: Error: git::https://<redacted>@github.com/org/mod.git\n", historyLogger.GetHistory())
+}

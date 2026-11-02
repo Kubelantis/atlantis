@@ -424,3 +424,16 @@ func TestHighConcurrencyStress(t *testing.T) {
 	wg.Wait()
 	close(prjCmdOutputChan)
 }
+
+// Job output is shown on the job page and persisted; credentials in URLs are
+// redacted from it as from comments and logs.
+func TestSendRedactsURLCredentials(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	prjCmdOutputChan := make(chan *jobs.ProjectCmdOutputLine, 1)
+	handler := jobs.NewAsyncProjectCommandOutputHandler(prjCmdOutputChan, logger, logstore.NoopLogStore{})
+	ctx := createTestProjectCmdContext(t)
+
+	handler.Send(ctx, "Error: git::https://user:s3cret@github.com/org/mod.git", false)
+
+	Equals(t, "Error: git::https://<redacted>@github.com/org/mod.git", (<-prjCmdOutputChan).Line)
+}

@@ -11,6 +11,7 @@ import (
 	"github.com/runatlantis/atlantis/server/events/command"
 	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/runatlantis/atlantis/server/logging"
+	"github.com/runatlantis/atlantis/server/utils"
 )
 
 type OutputBuffer struct {
@@ -156,6 +157,8 @@ func (p *AsyncProjectCommandOutputHandler) IsKeyExists(key string) bool {
 	return persisted
 }
 
+// Send streams a line of a job's output. Credentials in URLs are redacted, as
+// in comments and logs: the line is shown on the job page and persisted.
 func (p *AsyncProjectCommandOutputHandler) Send(ctx command.ProjectContext, msg string, operationComplete bool) {
 	p.projectCmdOutput <- &ProjectCmdOutputLine{
 		JobID: ctx.JobID,
@@ -171,7 +174,7 @@ func (p *AsyncProjectCommandOutputHandler) Send(ctx command.ProjectContext, msg 
 			},
 			JobStep: ctx.CommandName.String(),
 		},
-		Line:              msg,
+		Line:              utils.RedactURLCredentials(msg),
 		OperationComplete: operationComplete,
 	}
 }
@@ -189,7 +192,7 @@ func (p *AsyncProjectCommandOutputHandler) SendWorkflowHook(ctx models.WorkflowH
 			JobDescription: ctx.HookDescription,
 			JobStep:        ctx.HookStepName,
 		},
-		Line:              msg,
+		Line:              utils.RedactURLCredentials(msg),
 		OperationComplete: operationComplete,
 	}
 }
