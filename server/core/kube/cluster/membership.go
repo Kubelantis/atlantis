@@ -98,8 +98,10 @@ func NewMembership(cfg MembershipConfig) *Membership {
 		Name:        kube.Name(memberPrefix, cfg.Identity),
 		Holder:      cfg.Identity,
 		Incarnation: cfg.Incarnation,
-		Duration:    cfg.LeaseDuration,
-		Labels:      kube.Labels(kube.TypeMember, nil),
+		// Earlier versions read a member's name from holderIdentity.
+		HolderIsReplica: true,
+		Duration:        cfg.LeaseDuration,
+		Labels:          kube.Labels(kube.TypeMember, nil),
 	}
 	return m
 }

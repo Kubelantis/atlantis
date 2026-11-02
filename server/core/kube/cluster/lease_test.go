@@ -108,3 +108,31 @@ func TestLeaseOfNewProcessIsSafeFromOlderVersion(t *testing.T) {
 	Assert(t, leaseExists(t, c, ns), "older version deleted the newer process's lease")
 	Ok(t, newer.Acquire(ctx))
 }
+
+// A lease whose holderIdentity stays the replica name, as membership leases
+// do for earlier versions' readers, still keeps two incarnations of one name
+// apart.
+func TestReplicaNamedLeaseIsNotSharedByTwoIncarnations(t *testing.T) {
+	c, ns := kubetest.Client(t)
+	ctx := context.Background()
+	first, second := leaseFor(c, ns, "one"), leaseFor(c, ns, "two")
+	first.HolderIsReplica, second.HolderIsReplica = true, true
+
+	Ok(t, first.Acquire(ctx))
+	var lease coordinationv1.Lease
+	Ok(t, c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "test-lease"}, &lease))
+	Equals(t, "atlantis-0", cluster.Holder(&lease))
+	Equals(t, "atlantis-0", cluster.Replica(&lease))
+
+	err := second.Acquire(ctx)
+	Assert(t, errors.Is(err, cluster.ErrIdentityInUse), "second incarnation acquired a held lease: %v", err)
+	Ok(t, second.Release(ctx))
+	Assert(t, leaseExists(t, c, ns), "lease was deleted by an incarnation that does not hold it")
+	Ok(t, first.Acquire(ctx))
+
+	// After expiry the second takes over, and the first then sees it as held.
+	second.Now = func() time.Time { return time.Now().Add(10 * time.Second) }
+	Ok(t, second.Acquire(ctx))
+	err = first.Acquire(ctx)
+	Assert(t, errors.Is(err, cluster.ErrHeld), "first incarnation renewed a lease taken over by its successor: %v", err)
+}

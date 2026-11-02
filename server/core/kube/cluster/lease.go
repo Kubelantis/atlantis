@@ -37,8 +37,18 @@ type TimedLease struct {
 	// delete the lease until it expires. Holder is also recorded in the
 	// AnnotationReplica annotation; see Replica.
 	Incarnation string
-	Duration    time.Duration
-	Labels      map[string]string
+	// HolderIsReplica keeps holderIdentity as Holder alone and records the
+	// incarnation in the AnnotationIncarnation annotation instead. Membership
+	// leases need it: earlier versions read a member's replica name from
+	// holderIdentity, and a mixed-version cluster during a rolling upgrade
+	// must agree on member names for routing and plan-holder lookup. Same-name
+	// processes of this version still never share the lease; a live process
+	// of an earlier version with the same name is not fenced off, as before.
+	// A later release can drop this once no version that reads holderIdentity
+	// as the replica name remains in service.
+	HolderIsReplica bool
+	Duration        time.Duration
+	Labels          map[string]string
 	// Annotations are written on every acquire and renew.
 	Annotations map[string]string
 	Now         func() time.Time
@@ -79,7 +89,7 @@ func Replica(lease *coordinationv1.Lease) string {
 
 // holderIdentity is the holderIdentity this holder writes.
 func (l *TimedLease) holderIdentity() string {
-	if l.Incarnation == "" {
+	if l.Incarnation == "" || l.HolderIsReplica {
 		return l.Holder
 	}
 	return l.Holder + "/" + l.Incarnation
@@ -87,7 +97,13 @@ func (l *TimedLease) holderIdentity() string {
 
 // ours reports whether lease is held by this holder and incarnation.
 func (l *TimedLease) ours(lease *coordinationv1.Lease) bool {
-	return Holder(lease) == l.holderIdentity()
+	if Holder(lease) != l.holderIdentity() {
+		return false
+	}
+	if l.HolderIsReplica && l.Incarnation != "" {
+		return lease.Annotations[kube.AnnotationIncarnation] == l.Incarnation
+	}
+	return true
 }
 
 // annotations returns the annotations to write: Annotations plus the
@@ -99,6 +115,9 @@ func (l *TimedLease) annotations() map[string]string {
 	}
 	if l.Incarnation != "" {
 		a[kube.AnnotationReplica] = l.Holder
+		if l.HolderIsReplica {
+			a[kube.AnnotationIncarnation] = l.Incarnation
+		}
 	}
 	return a
 }
