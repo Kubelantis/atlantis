@@ -34,6 +34,9 @@ type DefaultDeleteLockCommand struct {
 	PlanStore        planstore.PlanStore
 }
 
+// errLockChanged is returned when a lock changes while it is being deleted.
+var errLockChanged = errors.New("the lock changed while it was being deleted; reload the page and try again")
+
 // DeleteLock discards the plan of the lock at id and releases the lock.
 // The discard is recorded in the shared database first: the plan file may be
 // on another replica or in a plan store, where deleting files here cannot
@@ -41,6 +44,12 @@ type DefaultDeleteLockCommand struct {
 // be recorded nothing is changed and an error is returned, so the caller is
 // never told the plan was discarded when it is still applicable, and can
 // retry.
+//
+// As in DeleteLocksByPull, it holds the pull's working-dir lock throughout,
+// so no plan or apply of the pull runs meanwhile, and releases only the
+// exact lock acquisition it read. The pull is known only once the lock has
+// been read, so the lock is read again after the pull is locked; if it
+// changed in between, nothing is changed.
 func (l *DefaultDeleteLockCommand) DeleteLock(logger logging.SimpleLogging, id string) (*models.ProjectLock, error) {
 	lock, err := l.Locker.GetLock(id)
 	if err != nil {
@@ -48,6 +57,23 @@ func (l *DefaultDeleteLockCommand) DeleteLock(logger logging.SimpleLogging, id s
 	}
 	if lock == nil {
 		return nil, nil
+	}
+	if l.WorkingDirLocker != nil && lock.Pull.BaseRepo != (models.Repo{}) {
+		unlockPull, err := l.WorkingDirLocker.TryLockPull(lock.Pull.BaseRepo.FullName, lock.Pull.Num, command.Unlock, WorkingDirLockMetadata{})
+		if err != nil {
+			return nil, err
+		}
+		defer unlockPull()
+		current, err := l.Locker.GetLock(id)
+		if err != nil {
+			return nil, err
+		}
+		if current == nil {
+			return nil, nil
+		}
+		if !current.Pull.SameAs(lock.Pull) || !current.Time.Equal(lock.Time) {
+			return nil, errLockChanged
+		}
 	}
 
 	// Locks from before BaseRepo was recorded cannot be matched to a status.
@@ -61,10 +87,17 @@ func (l *DefaultDeleteLockCommand) DeleteLock(logger logging.SimpleLogging, id s
 		}
 	}
 
-	// Release the lock only if it still belongs to the same pull: it may have
-	// been released and taken by another pull since it was read.
-	if _, err := l.Locker.UnlockIfOwnedByPull(lock.Project, lock.Workspace, lock.Pull); err != nil {
+	released, err := l.Locker.UnlockExact(*lock)
+	if err != nil {
 		return nil, err
+	}
+	if released == nil {
+		// Released meanwhile by a path that does not take the pull's
+		// working-dir lock, such as the pull being closed. The plan is
+		// discarded and its files below belong to this pull (plan paths
+		// and stored plan keys include the pull number), so removing them
+		// is still right; a lock another pull may hold now is untouched.
+		logger.Debug("lock for dir %q workspace %q was already released", lock.Project.Path, lock.Workspace)
 	}
 
 	removeErr := l.WorkingDir.DeletePlan(logger, lock.Pull.BaseRepo, lock.Pull, lock.Workspace, lock.Project.Path, lock.Project.ProjectName)
