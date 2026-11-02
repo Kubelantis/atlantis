@@ -80,3 +80,31 @@ func TestLeaseWithoutIncarnationIsHeldUntilExpired(t *testing.T) {
 	current.Now = func() time.Time { return time.Now().Add(10 * time.Second) }
 	Ok(t, current.Acquire(ctx))
 }
+
+// An earlier version compares holderIdentity alone and keeps annotations it
+// does not know, so the incarnation must be in holderIdentity: then a live
+// older-version process with the same name sees another holder and can
+// neither renew nor delete the lease of a newer process.
+func TestLeaseOfNewProcessIsSafeFromOlderVersion(t *testing.T) {
+	c, ns := kubetest.Client(t)
+	ctx := context.Background()
+	older := leaseFor(c, ns, "") // behaves as earlier versions do
+	newer := leaseFor(c, ns, "two")
+	Ok(t, older.Acquire(ctx))
+
+	// The older process stops renewing (partition); the newer one takes over.
+	newer.Now = func() time.Time { return time.Now().Add(10 * time.Second) }
+	Ok(t, newer.Acquire(ctx))
+	var lease coordinationv1.Lease
+	Ok(t, c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "test-lease"}, &lease))
+	Equals(t, "atlantis-0/two", cluster.Holder(&lease))
+	Equals(t, "atlantis-0", cluster.Replica(&lease))
+
+	// The older process comes back: it is refused, and its release leaves the
+	// newer process's lease alone.
+	err := older.Acquire(ctx)
+	Assert(t, errors.Is(err, cluster.ErrHeld), "older version renewed the newer process's lease: %v", err)
+	Ok(t, older.Release(ctx))
+	Assert(t, leaseExists(t, c, ns), "older version deleted the newer process's lease")
+	Ok(t, newer.Acquire(ctx))
+}

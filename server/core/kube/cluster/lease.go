@@ -28,11 +28,14 @@ type TimedLease struct {
 	Client    client.Client
 	Namespace string
 	Name      string
-	Holder    string
-	// Incarnation identifies this run of the holder's process. When set, a
-	// lease is ours only if it records both Holder and Incarnation: another
-	// process with the same name holds it until it expires. Empty compares
-	// Holder alone.
+	// Holder is the stable name of the holder (the replica name).
+	Holder string
+	// Incarnation identifies this run of the holder's process. When set, the
+	// lease's holderIdentity is Holder/Incarnation, so another process with
+	// the same name, including one running an earlier version that compares
+	// holderIdentity alone, sees another holder: it can neither renew nor
+	// delete the lease until it expires. Holder is also recorded in the
+	// AnnotationReplica annotation; see Replica.
 	Incarnation string
 	Duration    time.Duration
 	Labels      map[string]string
@@ -65,23 +68,37 @@ func Holder(lease *coordinationv1.Lease) string {
 	return *lease.Spec.HolderIdentity
 }
 
+// Replica returns the stable name of a lease's holder: the replica name for
+// routing. Leases written by earlier versions hold it in holderIdentity.
+func Replica(lease *coordinationv1.Lease) string {
+	if r := lease.Annotations[kube.AnnotationReplica]; r != "" {
+		return r
+	}
+	return Holder(lease)
+}
+
+// holderIdentity is the holderIdentity this holder writes.
+func (l *TimedLease) holderIdentity() string {
+	if l.Incarnation == "" {
+		return l.Holder
+	}
+	return l.Holder + "/" + l.Incarnation
+}
+
 // ours reports whether lease is held by this holder and incarnation.
 func (l *TimedLease) ours(lease *coordinationv1.Lease) bool {
-	if Holder(lease) != l.Holder {
-		return false
-	}
-	return l.Incarnation == "" || lease.Annotations[kube.AnnotationIncarnation] == l.Incarnation
+	return Holder(lease) == l.holderIdentity()
 }
 
 // annotations returns the annotations to write: Annotations plus the
-// incarnation.
+// replica name.
 func (l *TimedLease) annotations() map[string]string {
 	a := make(map[string]string, len(l.Annotations)+1)
 	for k, v := range l.Annotations {
 		a[k] = v
 	}
 	if l.Incarnation != "" {
-		a[kube.AnnotationIncarnation] = l.Incarnation
+		a[kube.AnnotationReplica] = l.Holder
 	}
 	return a
 }
@@ -91,7 +108,7 @@ func (l *TimedLease) annotations() map[string]string {
 func (l *TimedLease) Acquire(ctx context.Context) error {
 	now := metav1.NewMicroTime(l.now())
 	secs := int32(l.Duration / time.Second)
-	holder := l.Holder
+	holder := l.holderIdentity()
 	annotations := l.annotations()
 
 	var lease coordinationv1.Lease
@@ -118,8 +135,8 @@ func (l *TimedLease) Acquire(ctx context.Context) error {
 
 	ours := l.ours(&lease)
 	if !ours && !Expired(&lease, now.Time) {
-		if cur := Holder(&lease); cur == holder {
-			return fmt.Errorf("%w: %w (%s)", ErrHeld, ErrIdentityInUse, cur)
+		if Replica(&lease) == l.Holder {
+			return fmt.Errorf("%w: %w (%s)", ErrHeld, ErrIdentityInUse, Holder(&lease))
 		}
 		return fmt.Errorf("%w: %s", ErrHeld, Holder(&lease))
 	}

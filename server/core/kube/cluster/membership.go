@@ -169,7 +169,7 @@ func (m *Membership) refresh(ctx context.Context) error {
 			continue
 		}
 		draining, _ := strconv.ParseBool(l.Annotations[annotationDraining])
-		members = append(members, Member{Identity: Holder(l), Address: l.Annotations[kube.AnnotationAddress], Draining: draining})
+		members = append(members, Member{Identity: Replica(l), Address: l.Annotations[kube.AnnotationAddress], Draining: draining})
 	}
 	slices.SortFunc(members, func(a, b Member) int {
 		if a.Identity < b.Identity {
@@ -195,9 +195,18 @@ func (m *Membership) refresh(ctx context.Context) error {
 // with this identity. Right after a crash that is this replica's previous
 // run, whose lease has not expired yet; once it has lasted longer than a
 // lease, the other process is alive and renewing it.
+//
+// The member lease is named by this identity, so any other holder, including
+// the winner of a race to create it, is a process with the same name. Once
+// detected, the conflict lasts until this process holds the lease: an API
+// error says nothing about who holds it, and clearing the conflict on one
+// would let a duplicate become ready and run another process's commands.
 func (m *Membership) trackConflict(renewErr error) {
-	if !errors.Is(renewErr, ErrIdentityInUse) {
+	switch {
+	case renewErr == nil:
 		m.conflictSince.Store(0)
+		return
+	case !errors.Is(renewErr, ErrHeld):
 		return
 	}
 	now := time.Now()
