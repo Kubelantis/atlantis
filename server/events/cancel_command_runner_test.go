@@ -25,8 +25,8 @@ func TestCancelKeepsLocksOfRunningCommands(t *testing.T) {
 	tracker := events.NewCancellationTracker()
 	pull := models.PullRequest{Num: 1, BaseRepo: models.Repo{FullName: "owner/repo"}}
 
-	// A running command of the pull holds its locks.
-	releasePull, err := locker.TryLockPull("owner/repo", 1, command.Unlock, events.WorkingDirLockMetadata{})
+	// A running apply of the pull holds its pull lock and a workspace lock.
+	releasePull, err := locker.TryLockPull("owner/repo", 1, command.Apply, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 	defer releasePull()
 	releaseWorkspace, err := locker.TryLock("owner/repo", 1, "default", ".", "", command.Apply, events.WorkingDirLockMetadata{})
