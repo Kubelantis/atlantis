@@ -171,6 +171,29 @@ func TestUnlockByPullKeepsLeaseWhileCommandsRun(t *testing.T) {
 	unlock()
 }
 
+// Two processes with the same replica name must not both hold a pull: a
+// pull lock re-entrant by name would let both run terraform on it.
+func TestPullLockIsExclusiveBetweenProcessesWithOneName(t *testing.T) {
+	c, ns := kubetest.Client(t)
+	locker := func() *pulllock.Locker {
+		return pulllock.New(pulllock.Config{
+			Local: events.NewDefaultWorkingDirLocker(), Client: c, Namespace: ns, Identity: "atlantis-0",
+			Duration: 3 * time.Second, Logger: logging.NewNoopLogger(t),
+		})
+	}
+	old, restarted := locker(), locker()
+
+	unlock, err := old.TryLockPull("org/repo", 1, command.Apply, events.WorkingDirLockMetadata{})
+	Ok(t, err)
+	_, err = restarted.TryLockPull("org/repo", 1, command.Plan, events.WorkingDirLockMetadata{})
+	Assert(t, err != nil, "a second process with the same name locked a held pull")
+
+	unlock()
+	unlock, err = restarted.TryLockPull("org/repo", 1, command.Plan, events.WorkingDirLockMetadata{})
+	Ok(t, err)
+	unlock()
+}
+
 // grantingLocker is a local WorkingDirLocker that always grants, so a test
 // can exercise the lease alone.
 type grantingLocker struct{}

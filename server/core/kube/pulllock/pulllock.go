@@ -4,7 +4,10 @@
 // in-process locker is enough. During a membership change (scale up/down, a
 // rolling update) two replicas may briefly both believe they own a pull; this
 // locker closes that window with a per-pull Lease. The Lease is re-entrant for
-// the replica holding it, so parallel project commands on one replica share it.
+// the process holding it, so parallel project commands on one replica share
+// it. It records the process's incarnation as well as the replica name, so a
+// second process with the same name (a force-deleted pod still running, or a
+// shared --kubernetes-identity) cannot share it.
 //
 // Fencing: a replica stops trusting its lease once it has gone Duration/2
 // without a successful renewal, or as soon as another replica holds it. Other
@@ -42,6 +45,10 @@ type Config struct {
 	Client    client.Client
 	Namespace string
 	Identity  string
+	// Incarnation identifies this process; see kube.NewIncarnation. A
+	// random one is used when empty, so another process with the same
+	// Identity never shares a pull's lease.
+	Incarnation string
 	// Duration is how long the lease survives without renewal. Defaults to 30s.
 	Duration time.Duration
 	// Timeout bounds each API call. Defaults to 10s.
@@ -87,6 +94,9 @@ func New(cfg Config) *Locker {
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
+	}
+	if cfg.Incarnation == "" {
+		cfg.Incarnation = kube.NewIncarnation()
 	}
 	return &Locker{cfg: cfg, held: map[string]*held{}, releasing: map[string]chan struct{}{}}
 }
@@ -159,11 +169,12 @@ func (l *Locker) acquire(repoFullName string, pullNum int, cmdName command.Name)
 	}
 
 	lease := &cluster.TimedLease{
-		Client:    l.cfg.Client,
-		Namespace: l.cfg.Namespace,
-		Name:      kube.Name("pulllock", key),
-		Holder:    l.cfg.Identity,
-		Duration:  l.cfg.Duration,
+		Client:      l.cfg.Client,
+		Namespace:   l.cfg.Namespace,
+		Name:        kube.Name("pulllock", key),
+		Holder:      l.cfg.Identity,
+		Incarnation: l.cfg.Incarnation,
+		Duration:    l.cfg.Duration,
 		Labels: kube.Labels(kube.TypePullLock, map[string]string{
 			kube.LabelRepo: kube.Hash(repoFullName),
 			kube.LabelPull: strconv.Itoa(pullNum),

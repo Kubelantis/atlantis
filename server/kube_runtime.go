@@ -44,8 +44,11 @@ type kubeRuntime struct {
 	restConfig *rest.Config
 	namespace  string
 	identity   string
-	token      string
-	port       int
+	// incarnation identifies this process among any others that run with
+	// the same identity; see kube.NewIncarnation.
+	incarnation string
+	token       string
+	port        int
 
 	membership  *cluster.Membership
 	leader      *cluster.Leader
@@ -95,6 +98,7 @@ func newKubeRuntime(userConfig UserConfig, c client.Client, logger logging.Simpl
 		address = "http://" + net.JoinHostPort(ip, strconv.Itoa(userConfig.ClusterPort))
 	}
 
+	incarnation := kube.NewIncarnation()
 	logger = logger.With("replica", identity)
 	token := userConfig.ClusterToken
 	if token == "" {
@@ -105,7 +109,7 @@ func newKubeRuntime(userConfig UserConfig, c client.Client, logger logging.Simpl
 	}
 	scope = scope.SubScope("cluster")
 	k := &kubeRuntime{
-		client: c, restConfig: restCfg, namespace: ns, identity: identity,
+		client: c, restConfig: restCfg, namespace: ns, identity: identity, incarnation: incarnation,
 		token: token, port: userConfig.ClusterPort,
 		logger: logger, scope: scope,
 		rpcClient: &clusterrpc.Client{
@@ -115,8 +119,9 @@ func newKubeRuntime(userConfig UserConfig, c client.Client, logger logging.Simpl
 	}
 	membersGauge := scope.Gauge("members")
 	apiHealthy := scope.Gauge("api_healthy")
+	identityConflict := scope.Gauge("identity_conflict")
 	k.membership = cluster.NewMembership(cluster.MembershipConfig{
-		Client: c, Namespace: ns, Identity: identity, Address: address, Logger: logger,
+		Client: c, Namespace: ns, Identity: identity, Incarnation: incarnation, Address: address, Logger: logger,
 		OnChange: func(members []cluster.Member) {
 			membersGauge.Update(float64(len(members)))
 			logger.Info("cluster membership changed: %d live replicas", len(members))
@@ -127,12 +132,19 @@ func newKubeRuntime(userConfig UserConfig, c client.Client, logger logging.Simpl
 			} else {
 				apiHealthy.Update(1)
 			}
+			if k.membership.IdentityConflict() {
+				identityConflict.Update(1)
+			} else {
+				identityConflict.Update(0)
+			}
 		},
 	})
 	k.housekeeper = &cluster.Housekeeper{Client: c, Namespace: ns, Logger: logger}
 	leaderGauge := scope.Gauge("leader")
 	k.leader = cluster.NewLeader(cluster.LeaderConfig{
-		RestConfig: restCfg, Namespace: ns, Identity: identity, Logger: logger,
+		// The incarnation keeps two processes with one name from both
+		// leading.
+		RestConfig: restCfg, Namespace: ns, Identity: identity + "/" + incarnation, Logger: logger,
 		Run: k.housekeeper.Run,
 		OnChange: func(isLeader bool, leader string) {
 			if isLeader {
@@ -143,7 +155,7 @@ func newKubeRuntime(userConfig UserConfig, c client.Client, logger logging.Simpl
 			logger.Info("cluster leader is %s", leader)
 		},
 	})
-	logger.Info("running on Kubernetes in namespace %s as %s (cluster address %s)", ns, identity, address)
+	logger.Info("running on Kubernetes in namespace %s as %s, incarnation %s (cluster address %s)", ns, identity, incarnation, address)
 	return k, nil
 }
 
@@ -156,7 +168,7 @@ func (k *kubeRuntime) database() (*kubedb.KubeDB, error) {
 func (k *kubeRuntime) workingDirLocker(local events.WorkingDirLocker, onLost func(repoFullName string, pullNum int)) events.WorkingDirLocker {
 	lost := k.scope.Counter("pull_lock_lost")
 	return pulllock.New(pulllock.Config{
-		Local: local, Client: k.client, Namespace: k.namespace, Identity: k.identity, Logger: k.logger,
+		Local: local, Client: k.client, Namespace: k.namespace, Identity: k.identity, Incarnation: k.incarnation, Logger: k.logger,
 		OnLost: func(repoFullName string, pullNum int) {
 			lost.Inc(1)
 			onLost(repoFullName, pullNum)
@@ -298,6 +310,9 @@ func (k *kubeRuntime) ready(draining bool) (bool, string) {
 	}
 	if !k.started.Load() {
 		return false, "starting"
+	}
+	if k.membership != nil && k.membership.IdentityConflict() {
+		return false, "another process holds this replica's identity"
 	}
 	return true, ""
 }
