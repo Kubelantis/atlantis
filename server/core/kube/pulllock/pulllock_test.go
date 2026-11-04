@@ -107,7 +107,7 @@ func TestConcurrentReplicasOneWinner(t *testing.T) {
 	wins := 0
 	for _, l := range r {
 		wg.Go(func() {
-			if unlock, err := l.TryLockPull("org/repo", 9, command.Apply, events.WorkingDirLockMetadata{}); err == nil {
+			if unlock, err := l.TryLockPull(models.Repo{FullName: "org/repo"}, 9, command.Apply, events.WorkingDirLockMetadata{}); err == nil {
 				// Release when the test ends, so the lease is not renewed
 				// after it.
 				t.Cleanup(unlock)
