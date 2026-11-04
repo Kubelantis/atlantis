@@ -98,3 +98,16 @@ func TestExpandEnvResolvesContext(t *testing.T) {
 	Equals(t, "envs/prod", got["DIR"])
 	Equals(t, "${NOT_A_CONTEXT_VAR} and $HOME", got["LITERAL"])
 }
+
+// A flag given as two tokens, flag then value, is merged as one argument: a
+// repeated flag with different values keeps both, and an identical pair is
+// kept once.
+func TestInputsOverrideKeepsFlagValuePairs(t *testing.T) {
+	server := valid.Inputs{ExtraArgs: map[string][]string{
+		"plan": {"-target", "module.a", "-lock-timeout=5m"},
+	}}
+	got := server.Override(&valid.Inputs{ExtraArgs: map[string][]string{
+		"plan": {"-target", "module.b", "-target", "module.a", "-refresh=false"},
+	}})
+	Equals(t, []string{"-target", "module.a", "-lock-timeout=5m", "-target", "module.b", "-refresh=false"}, got.ExtraArgs["plan"])
+}

@@ -70,18 +70,49 @@ func (base Inputs) Override(o *Inputs) Inputs {
 			out.ExtraArgs = map[string][]string{}
 		}
 		for step, args := range o.ExtraArgs {
-			merged := slices.Clone(out.ExtraArgs[step])
-			for _, arg := range args {
-				if !slices.Contains(merged, arg) {
-					merged = append(merged, arg)
-				}
-			}
-			if len(merged) > 0 {
+			if merged := mergeArgs(out.ExtraArgs[step], args); len(merged) > 0 {
 				out.ExtraArgs[step] = merged
 			}
 		}
 	}
 	return out
+}
+
+// mergeArgs appends extra's arguments to base's, leaving out those base
+// already has. An argument is a single token (`-upgrade`, `-lock-timeout=5m`)
+// or a flag followed by its value (`-target module.a`), so the same flag with
+// a different value is kept rather than losing its flag.
+func mergeArgs(base, extra []string) []string {
+	merged := slices.Clone(base)
+	have := map[string]bool{}
+	for _, a := range argUnits(base) {
+		have[strings.Join(a, "\x00")] = true
+	}
+	for _, a := range argUnits(extra) {
+		key := strings.Join(a, "\x00")
+		if have[key] {
+			continue
+		}
+		have[key] = true
+		merged = append(merged, a...)
+	}
+	return merged
+}
+
+// argUnits groups args into arguments: a flag without `=` followed by a token
+// that isn't a flag is one argument with its value.
+func argUnits(args []string) [][]string {
+	var units [][]string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if strings.HasPrefix(arg, "-") && !strings.Contains(arg, "=") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+			units = append(units, []string{arg, args[i+1]})
+			i++
+			continue
+		}
+		units = append(units, []string{arg})
+	}
+	return units
 }
 
 // IsZero reports whether no input is configured.
