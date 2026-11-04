@@ -8,7 +8,7 @@ rule_files:
 evaluation_interval: 1m
 
 tests:
-  # Three ready replicas that all see each other: no alert.
+  # Three reporting replicas that all see each other: no alert.
   - interval: 1m
     input_series:
       - series: 'atlantis_cluster_members{namespace="default", service="atlantis", pod="atlantis-0"}'
@@ -23,7 +23,7 @@ tests:
         exp_alerts: []
 
   # HPA scaled to three, and one replica sees only two members. The floor
-  # (minReplicas 2) is still met, so only the comparison with the ready
+  # (minReplicas 2) is still met, so only the comparison with the reporting
   # replicas catches it.
   - interval: 1m
     input_series:
@@ -43,9 +43,9 @@ tests:
           - exp_labels:
               severity: warning
             exp_annotations:
-              summary: An Atlantis replica sees fewer live members than there are ready replicas, or fewer than the configured minimum.
+              summary: An Atlantis replica sees fewer live members than there are reporting replicas, or fewer than the configured minimum.
 
-  # Only one replica is ready and it sees only itself: below the floor.
+  # Only one replica reports and it sees only itself: below the floor.
   - interval: 1m
     input_series:
       - series: 'atlantis_cluster_members{namespace="default", service="atlantis", pod="atlantis-0"}'
@@ -57,7 +57,7 @@ tests:
           - exp_labels:
               severity: warning
             exp_annotations:
-              summary: An Atlantis replica sees fewer live members than there are ready replicas, or fewer than the configured minimum.
+              summary: An Atlantis replica sees fewer live members than there are reporting replicas, or fewer than the configured minimum.
 
   # Another release in the same namespace is not counted with this one.
   - interval: 1m
