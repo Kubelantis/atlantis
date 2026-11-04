@@ -361,25 +361,27 @@ func TestWorkingDirLocker_PlanAndApplyStillLockWorkspacesInsideTheirPullLock(t *
 	}
 }
 
-// Two VCS providers can each have a repo with this name; their pulls with the
-// same number are different pulls and do not wait for each other.
-func TestTryLockSameNamedRepoOnOtherHostIsSeparate(t *testing.T) {
+// Two VCS providers can each have a repo with this name. Their pulls with the
+// same number share one working directory, repos/<owner/repo>/<pull>, until
+// directories carry the VCS host (#18), so they wait for each other.
+func TestTryLockSameNamedRepoOnOtherHostSharesTheWorkingDir(t *testing.T) {
 	locker := events.NewDefaultWorkingDirLocker()
 	github := models.Repo{FullName: "owner/repo", VCSHost: models.VCSHost{Hostname: "github.com"}}
 	gitlab := models.Repo{FullName: "owner/repo", VCSHost: models.VCSHost{Hostname: "gitlab.com"}}
 
 	unlockPull, err := locker.TryLockPull(github, 1, command.Plan, events.WorkingDirLockMetadata{})
 	Ok(t, err)
-	defer unlockPull()
 	unlock, err := locker.TryLock(github, 1, "default", ".", "", command.Plan, events.WorkingDirLockMetadata{})
 	Ok(t, err)
-	defer unlock()
 
-	unlockOther, err := locker.TryLockPull(gitlab, 1, command.Plan, events.WorkingDirLockMetadata{})
+	_, err = locker.TryLockPull(gitlab, 1, command.Plan, events.WorkingDirLockMetadata{})
+	ErrContains(t, "currently locked", err)
+	_, err = locker.TryLock(gitlab, 1, "default", ".", "", command.Plan, events.WorkingDirLockMetadata{})
+	ErrContains(t, "currently locked", err)
+
+	unlock()
+	unlockPull()
+	unlockOther, err := locker.TryLock(gitlab, 1, "default", ".", "", command.Plan, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 	unlockOther()
-	unlockOther, err = locker.TryLock(gitlab, 1, "default", ".", "", command.Plan, events.WorkingDirLockMetadata{})
-	Ok(t, err)
-	unlockOther()
-	Assert(t, !locker.HasCommandLock(gitlab, 1, command.Plan), "another host's plan lock was reported")
 }

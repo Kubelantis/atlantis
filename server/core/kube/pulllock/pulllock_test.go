@@ -304,3 +304,33 @@ func TestPullLockAlsoHoldsTheLegacyLease(t *testing.T) {
 	Ok(t, c.List(context.Background(), &leases, client.InNamespace(ns)))
 	Equals(t, 1, len(leases.Items)) // the new-name lease was given back
 }
+
+// Same-named pulls on two VCS hosts share the legacy lease, so one replica
+// must not run both: releasing one would delete the legacy lease the other
+// still relies on, letting a replica on an earlier version take the pull.
+func TestSameNamedPullsOnTwoHostsDoNotShareTheLegacyLease(t *testing.T) {
+	c, ns := kubetest.Client(t)
+	github := models.Repo{FullName: "org/repo", VCSHost: models.VCSHost{Hostname: "github.com"}}
+	gitlab := models.Repo{FullName: "org/repo", VCSHost: models.VCSHost{Hostname: "gitlab.com"}}
+	l := pulllock.New(pulllock.Config{
+		Local: events.NewDefaultWorkingDirLocker(), Client: c, Namespace: ns, Identity: "a",
+		Duration: 3 * time.Second, Logger: logging.NewNoopLogger(t),
+	})
+	legacy := client.ObjectKey{Namespace: ns, Name: kube.Name("pulllock", "org/repo#1")}
+
+	// Different workspaces, so the local locker alone lets both through.
+	unlockGitHub, err := l.TryLock(github, 1, "default", "a", "", command.Apply, events.WorkingDirLockMetadata{})
+	Ok(t, err)
+	_, err = l.TryLock(gitlab, 1, "staging", "b", "", command.Import, events.WorkingDirLockMetadata{})
+	ErrContains(t, "currently locked", err)
+	_, err = l.TryLockPull(gitlab, 1, command.Plan, events.WorkingDirLockMetadata{})
+	ErrContains(t, "currently locked", err)
+	Ok(t, c.Get(context.Background(), legacy, &coordinationv1.Lease{}))
+
+	unlockGitHub()
+	unlockGitLab, err := l.TryLock(gitlab, 1, "staging", "b", "", command.Import, events.WorkingDirLockMetadata{})
+	Ok(t, err)
+	Ok(t, c.Get(context.Background(), legacy, &coordinationv1.Lease{}))
+	Assert(t, !l.LostPullLock(gitlab, 1), "the pull holding the legacy lease must stay trusted")
+	unlockGitLab()
+}

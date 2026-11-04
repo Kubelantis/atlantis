@@ -89,6 +89,9 @@ type Locker struct {
 	// being deleted. acquire waits for it so the delete cannot remove a lease
 	// that was just taken again.
 	releasing map[string]chan struct{}
+	// releasingLegacy is releasing keyed by the legacy lease name of the
+	// pull, so a same-named pull on another VCS host waits too; see acquire.
+	releasingLegacy map[string]chan struct{}
 }
 
 // New returns a Locker.
@@ -105,7 +108,7 @@ func New(cfg Config) *Locker {
 	if cfg.Incarnation == "" {
 		cfg.Incarnation = kube.NewIncarnation()
 	}
-	return &Locker{cfg: cfg, held: map[string]*held{}, releasing: map[string]chan struct{}{}}
+	return &Locker{cfg: cfg, held: map[string]*held{}, releasing: map[string]chan struct{}{}, releasingLegacy: map[string]chan struct{}{}}
 }
 
 // trustWindow is how long a lease is trusted after its last renewal.
@@ -159,9 +162,13 @@ func pullKey(repoKey string, pullNum int) string {
 // acquire takes (or re-enters) the pull lease and returns its release func.
 func (l *Locker) acquire(repo models.Repo, pullNum int, cmdName command.Name) (func(), error) {
 	key := pullKey(repo.ID(), pullNum)
+	legacyKey := pullKey(repo.FullName, pullNum)
 	l.mu.Lock()
 	for {
 		ch, ok := l.releasing[key]
+		if !ok {
+			ch, ok = l.releasingLegacy[legacyKey]
+		}
 		if !ok {
 			break
 		}
@@ -187,10 +194,19 @@ func (l *Locker) acquire(repo models.Repo, pullNum int, cmdName command.Name) (f
 	// the full name alone, which earlier versions use, is taken too, so a
 	// replica still running an earlier version during a rolling update is
 	// kept out of the pull. Until it is dropped, pulls of same-named repos on
-	// two VCS providers still wait for each other.
+	// two VCS providers still wait for each other, here as across replicas:
+	// acquiring the legacy lease again here would succeed, as this replica
+	// holds it, and releasing either pull would then delete it under the
+	// other.
+	for _, other := range l.held {
+		if other.repo.FullName == repo.FullName && other.pullNum == pullNum {
+			return func() {}, fmt.Errorf("cannot run %q: pull request %d of a repo with the same name on another VCS host is currently locked on this Atlantis replica.\n"+
+				"Wait until its command is complete and try again", cmdName, pullNum)
+		}
+	}
 	leases := []*cluster.TimedLease{
 		l.lease(key, repo.FullName, pullNum, cmdName),
-		l.lease(pullKey(repo.FullName, pullNum), repo.FullName, pullNum, cmdName),
+		l.lease(legacyKey, repo.FullName, pullNum, cmdName),
 	}
 	for i, lease := range leases {
 		ctx, cancel := context.WithTimeout(context.Background(), l.cfg.Timeout)
@@ -308,11 +324,14 @@ func (l *Locker) release(key string, owner *held) {
 	}
 	delete(l.held, key)
 	done := make(chan struct{})
+	legacyKey := pullKey(h.repo.FullName, h.pullNum)
 	l.releasing[key] = done
+	l.releasingLegacy[legacyKey] = done
 	l.mu.Unlock()
 	defer func() {
 		l.mu.Lock()
 		delete(l.releasing, key)
+		delete(l.releasingLegacy, legacyKey)
 		l.mu.Unlock()
 		close(done)
 	}()

@@ -44,8 +44,9 @@ type workingDirLock struct {
 type WorkingDirLocker interface {
 	// TryLockPull tries to acquire a pull-level lock for a command. It is used to
 	// coordinate commands that can make pull-wide plan state inconsistent.
-	// Locks are keyed by the repo ID, which includes the VCS host, so pulls of
-	// same-named repos on two providers do not share them.
+	// Locks guard the pull's working directories, which do not carry the VCS
+	// host yet, so pulls of same-named repos on two providers share them; see
+	// workingDirKey.
 	TryLockPull(repo models.Repo, pullNum int, cmdName command.Name, metadata WorkingDirLockMetadata) (func(), error)
 	// TryLock tries to acquire a lock for this repo, pull, workspace, and path.
 	// It returns a function that should be used to unlock the workspace and
@@ -67,13 +68,21 @@ type DefaultWorkingDirLocker struct {
 	locks map[string]workingDirLock
 }
 
+// workingDirKey identifies the working directories a lock guards. Clone and
+// plan directories are repos/<owner/repo>/<pull>/<workspace>, without the VCS
+// host, so same-named pulls on two VCS providers share them and must wait for
+// each other. Use repo.ID() once directories carry the host (#18).
+func workingDirKey(repo models.Repo) string {
+	return repo.FullName
+}
+
 // NewDefaultWorkingDirLocker is a constructor.
 func NewDefaultWorkingDirLocker() *DefaultWorkingDirLocker {
 	return &DefaultWorkingDirLocker{locks: make(map[string]workingDirLock)}
 }
 
 func (d *DefaultWorkingDirLocker) TryLock(repo models.Repo, pullNum int, workspace string, path string, projectName string, cmdName command.Name, metadata WorkingDirLockMetadata) (func(), error) {
-	repoKey := repo.ID()
+	repoKey := workingDirKey(repo)
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
@@ -97,7 +106,7 @@ func (d *DefaultWorkingDirLocker) TryLock(repo models.Repo, pullNum int, workspa
 }
 
 func (d *DefaultWorkingDirLocker) TryLockPull(repo models.Repo, pullNum int, cmdName command.Name, metadata WorkingDirLockMetadata) (func(), error) {
-	repoKey := repo.ID()
+	repoKey := workingDirKey(repo)
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
@@ -129,7 +138,7 @@ func (d *DefaultWorkingDirLocker) TryLockPull(repo models.Repo, pullNum int, cmd
 }
 
 func (d *DefaultWorkingDirLocker) HasCommandLock(repo models.Repo, pullNum int, cmdName command.Name) bool {
-	repoKey := repo.ID()
+	repoKey := workingDirKey(repo)
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
@@ -219,7 +228,7 @@ func WorkingDirLockMetadataForProject(ctx command.ProjectContext, jobURL string)
 
 // UnlockByPull unlocks all workspaces for a specific pull request
 func (d *DefaultWorkingDirLocker) UnlockByPull(repo models.Repo, pullNum int) {
-	repoKey := repo.ID()
+	repoKey := workingDirKey(repo)
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
