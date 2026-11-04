@@ -214,6 +214,8 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends xz-utils=${DEBIAN_XZ_UTILS_VERSION} && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+# npm and cdktn start with `#!/usr/bin/env node`.
+ENV PATH="/opt/node/bin:${PATH}"
 WORKDIR /tmp/build
 RUN case ${TARGETPLATFORM} in \
         "linux/amd64") NODE_ARCH=x64 ;; \
