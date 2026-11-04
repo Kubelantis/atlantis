@@ -82,6 +82,9 @@ ENV DEBIAN_DUMB_INIT_VERSION="1.2.5-3"
 ENV DEBIAN_GNUPG_VERSION="2.4.7-21+deb13u1"
 # renovate: datasource=deb depName=openssl
 ENV DEBIAN_OPENSSL_VERSION="3.5.7-1~deb13u3"
+# Node.js (for CDK Terrain) needs libatomic on linux/arm/v7.
+# renovate: datasource=deb depName=libatomic1
+ENV DEBIAN_LIBATOMIC1_VERSION="14.2.0-19"
 
 # Set up the 'atlantis' user and adjust permissions. User with uid 1000 is for backwards compatibility
 RUN groupadd --gid 1000 atlantis && \
@@ -101,7 +104,8 @@ RUN apt-get update && \
     openssh-server=${DEBIAN_OPENSSH_SERVER_VERSION} \
     dumb-init=${DEBIAN_DUMB_INIT_VERSION} \
     gnupg=${DEBIAN_GNUPG_VERSION} \
-    openssl=${DEBIAN_OPENSSL_VERSION} && \
+    openssl=${DEBIAN_OPENSSL_VERSION} \
+    libatomic1=${DEBIAN_LIBATOMIC1_VERSION} && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
