@@ -130,12 +130,19 @@ func stop() {
 
 // stopOnSignal stops them too when the test binary is interrupted or
 // terminated, which would otherwise leave them running. A signal during
-// startup waits for it to finish, then stops whatever it started.
+// startup waits for it to finish, then stops whatever it started. A second
+// signal exits at once, without waiting, as an escape hatch for a hung
+// startup or stop; the API server and etcd may then keep running.
 func stopOnSignal() {
-	sig := make(chan os.Signal, 1)
+	sig := make(chan os.Signal, 2)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sig
+		go func() {
+			<-sig
+			fmt.Fprintln(os.Stderr, "kubetest: second signal, exiting without stopping the envtest API server and etcd")
+			os.Exit(1)
+		}()
 		stop()
 		os.Exit(1)
 	}()
