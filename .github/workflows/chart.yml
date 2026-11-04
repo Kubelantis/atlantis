@@ -1,0 +1,98 @@
+name: chart
+
+on:
+  push:
+    branches:
+      - "main"
+      - "master"
+      - "release-**"
+    paths:
+      - "deploy/helm/**"
+      - ".github/workflows/chart.yml"
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+    paths:
+      - "deploy/helm/**"
+      - ".github/workflows/chart.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CHART: deploy/helm/atlantis
+  # Keep each checksum in sync with its versioned archive URL.
+  PROMETHEUS_DOWNLOAD_URL: https://github.com/prometheus/prometheus/releases/download/v2.53.3/prometheus-2.53.3.linux-amd64.tar.gz
+  PROMETHEUS_DOWNLOAD_SHA256: ebe549477a699c464a0cef0d8d55c0cc9972a1b301fc910b5f260cfc3e08f6a3
+  KUBECONFORM_DOWNLOAD_URL: https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+  KUBECONFORM_DOWNLOAD_SHA256: 95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73
+
+jobs:
+  chart:
+    name: Helm chart
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install promtool and kubeconform
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          cd "$RUNNER_TEMP"
+          wget -q -O prometheus.tar.gz "${PROMETHEUS_DOWNLOAD_URL}"
+          echo "${PROMETHEUS_DOWNLOAD_SHA256}  prometheus.tar.gz" | sha256sum --check --strict
+          tar -xzf prometheus.tar.gz --strip-components=1 -C bin --wildcards '*/promtool'
+          wget -q -O kubeconform.tar.gz "${KUBECONFORM_DOWNLOAD_URL}"
+          echo "${KUBECONFORM_DOWNLOAD_SHA256}  kubeconform.tar.gz" | sha256sum --check --strict
+          tar -xzf kubeconform.tar.gz -C bin kubeconform
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # Defaults, every optional resource, and no persistence.
+      - name: Lint and render
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/rendered"
+          variants=(
+            "default:--set vcsSecretName=atlantis-vcs"
+            "all:--set vcsSecretName=atlantis-vcs --set autoscaling.enabled=true --set ingress.enabled=true --set networkPolicy.enabled=true --set metrics.serviceMonitor.enabled=true --set metrics.prometheusRule.enabled=true"
+            "no-persistence:--set vcsSecretName=atlantis-vcs --set persistence.enabled=false"
+          )
+          for v in "${variants[@]}"; do
+            name="${v%%:*}"
+            args="${v#*:}"
+            echo "::group::$name"
+            # shellcheck disable=SC2086
+            helm lint --strict "$CHART" $args
+            # shellcheck disable=SC2086
+            helm template atlantis "$CHART" --include-crds $args > "$RUNNER_TEMP/rendered/$name.yaml"
+            echo "::endgroup::"
+          done
+
+      - name: Validate manifests
+        run: |
+          kubeconform -strict -summary -ignore-missing-schemas "$RUNNER_TEMP"/rendered/*.yaml
+
+      - name: Check and test alert rules
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/rules"
+          cp deploy/helm/tests/prometheusrule-test.yaml "$RUNNER_TEMP/rules/"
+          helm template atlantis "$CHART" --namespace default \
+            --set vcsSecretName=atlantis-vcs \
+            --set metrics.prometheusRule.enabled=true \
+            --set autoscaling.enabled=true --set autoscaling.minReplicas=2 \
+            -s templates/prometheusrule.yaml | yq '.spec' > "$RUNNER_TEMP/rules/rules.yaml"
+          promtool check rules "$RUNNER_TEMP/rules/rules.yaml"
+          promtool test rules "$RUNNER_TEMP/rules/prometheusrule-test.yaml"
