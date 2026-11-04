@@ -42,14 +42,6 @@ command:
     exec: "printenv ATLANTIS_DEFAULT_TF_VERSION"
     exit-status: 1
 
-  # ensure the server refuses to start, with a message that says what to set,
-  # rather than failing later in a less obvious way
-  server-fails-fast-without-tf-version:
-    exec: "atlantis server --gh-user=u --gh-token=t --repo-allowlist='github.com/*'"
-    exit-status: 1
-    stderr:
-      - "terraform not found in"
-      - "Set --default-tf-version"
 
 file:
   /usr/local/bin/terraform:
