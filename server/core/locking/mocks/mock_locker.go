@@ -102,31 +102,46 @@ func (mr *MockLockerMockRecorder) Unlock(key any) *gomock.Call {
 }
 
 // UnlockByPull mocks base method.
-func (m *MockLocker) UnlockByPull(repoFullName string, pullNum int) ([]models.ProjectLock, error) {
+func (m *MockLocker) UnlockByPull(repo models.Repo, pullNum int) ([]models.ProjectLock, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UnlockByPull", repoFullName, pullNum)
+	ret := m.ctrl.Call(m, "UnlockByPull", repo, pullNum)
 	ret0, _ := ret[0].([]models.ProjectLock)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // UnlockByPull indicates an expected call of UnlockByPull.
-func (mr *MockLockerMockRecorder) UnlockByPull(repoFullName, pullNum any) *gomock.Call {
+func (mr *MockLockerMockRecorder) UnlockByPull(repo, pullNum any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnlockByPull", reflect.TypeOf((*MockLocker)(nil).UnlockByPull), repoFullName, pullNum)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnlockByPull", reflect.TypeOf((*MockLocker)(nil).UnlockByPull), repo, pullNum)
+}
+
+// UnlockExact mocks base method.
+func (m *MockLocker) UnlockExact(lock models.ProjectLock) (*models.ProjectLock, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UnlockExact", lock)
+	ret0, _ := ret[0].(*models.ProjectLock)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// UnlockExact indicates an expected call of UnlockExact.
+func (mr *MockLockerMockRecorder) UnlockExact(lock any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnlockExact", reflect.TypeOf((*MockLocker)(nil).UnlockExact), lock)
 }
 
 // UnlockIfOwnedByPull mocks base method.
-func (m *MockLocker) UnlockIfOwnedByPull(project models.Project, workspace string, pullNum int) (*models.ProjectLock, error) {
+func (m *MockLocker) UnlockIfOwnedByPull(project models.Project, workspace string, pull models.PullRequest) (*models.ProjectLock, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UnlockIfOwnedByPull", project, workspace, pullNum)
+	ret := m.ctrl.Call(m, "UnlockIfOwnedByPull", project, workspace, pull)
 	ret0, _ := ret[0].(*models.ProjectLock)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // UnlockIfOwnedByPull indicates an expected call of UnlockIfOwnedByPull.
-func (mr *MockLockerMockRecorder) UnlockIfOwnedByPull(project, workspace, pullNum any) *gomock.Call {
+func (mr *MockLockerMockRecorder) UnlockIfOwnedByPull(project, workspace, pull any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnlockIfOwnedByPull", reflect.TypeOf((*MockLocker)(nil).UnlockIfOwnedByPull), project, workspace, pullNum)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnlockIfOwnedByPull", reflect.TypeOf((*MockLocker)(nil).UnlockIfOwnedByPull), project, workspace, pull)
 }

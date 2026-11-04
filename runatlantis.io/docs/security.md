@@ -95,6 +95,25 @@ It is highly recommended to enable authentication in the web service. Enable Bas
 
 You can also pass these as environment variables `ATLANTIS_WEB_BASIC_AUTH=true` `ATLANTIS_WEB_USERNAME=yourUsername` and `ATLANTIS_WEB_PASSWORD=yourPassword`.
 
+Atlantis logs each failed login at `warn`, with the source address and the username tried. It logs each request that can change state at `info`, with the method, path, status, source address and who made it: the web user, `api` for the API (its token is shared, so it doesn't identify anyone), or `anonymous`. That covers deleting a lock, the global apply lock, GitHub App setup and every `/api/` call. The source address is the connection's peer, so behind a proxy or load balancer it's the proxy's address. Query parameter values other than a lock `id` are logged as `<redacted>`, as they can be credentials such as the GitHub App setup code. A request with an `Authorization` header that isn't valid Basic credentials is also logged as a failed login, without the header.
+
 :::tip Tip
 We do encourage the usage of complex passwords in order to prevent basic bruteforcing attacks.
 :::
+
+### Logs and Secrets
+
+Atlantis writes Terraform output to several places, and that output can contain secrets: values that aren't marked `sensitive`, provider errors, or URLs with embedded credentials.
+
+- **Pull request comments** carry plan and apply output.
+- **Job logs** are kept on each replica's volume while jobs run. With `--enable-external-stores` and a `log_store`, completed logs are archived to S3.
+- **Application logs** include command errors and the tail of their output.
+
+To limit exposure:
+
+- **Mark sensitive values.** Mark variables and outputs `sensitive` in Terraform, so plans show them as `(sensitive value)`.
+- **Protect the job pages.** Enable authentication on the web server (see above), so job output is not public.
+- **Restrict the log bucket.** Limit access to the S3 bucket that holds archived logs and plans: tight IAM, server-side encryption (`server_side_encryption`, `kms_key_id`) and a lifecycle rule that expires old objects. Plan files also contain the planned values, including sensitive ones.
+- **Treat application logs as sensitive** in your log pipeline.
+
+Atlantis redacts credentials in http(s) URLs (`https://user:token@host` or `https://token@host` becomes `https://<redacted>@host`) in pull request comments, commit status descriptions, job output, application logs and API error responses. It can't recognize other secrets in command output, so don't rely on redaction alone.

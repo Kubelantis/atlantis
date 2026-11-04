@@ -451,7 +451,9 @@ atlantis server --cluster-plan-holder-wait-seconds=180
 ATLANTIS_CLUSTER_PLAN_HOLDER_WAIT_SECONDS=180
 ```
 
-When no external plan store is configured, `atlantis apply` runs on the replica that made the plan, because that is where the plan files are. If that replica is restarting (a StatefulSet pod keeps its name and volume), the apply waits up to this many seconds for it to come back before running on another replica, which may need a new plan. Defaults to `180`; a negative value disables waiting.
+When no external plan store is configured, `atlantis apply` runs on the replica that made the plan, because that is where the plan files are. If that replica is restarting, draining or being rescheduled (a StatefulSet pod keeps its name, and its volume unless the volume is node-local and the node is lost), the apply waits up to this many seconds for it to come back. Defaults to `180`; a negative value disables waiting.
+
+The wait limits one apply, not the plans. If the replica is away longer, that apply runs on another replica, which doesn't have the plan files and refuses it. The plans are still on the replica's volume, and it's still recorded as their holder, so an `atlantis apply` after it returns uses them, as long as they are still valid. A new plan is needed only if the plans are lost with the volume, for example when the replica is scaled away. With more than one replica, configure a shared plan store (see [`--enable-external-stores`](#enable-external-stores)) so any replica can apply.
 
 ### `--cluster-port`
 
@@ -696,6 +698,8 @@ ATLANTIS_ENABLE_EXTERNAL_STORES=true
 ```
 
 Enable external storage backends configured in the server-side repo config (`external_stores` block). When set, Atlantis reads the `external_stores` section from the repo config YAML to initialize backends such as S3 for plan file persistence (`external_stores.plan_store`) and for archiving completed job logs (`external_stores.log_store`), so that any replica can apply plans and serve job output. Both accept `server_side_encryption` (`AES256`, `aws:kms` or `aws:kms:dsse`) and `kms_key_id`.
+
+Archived job logs hold Terraform output, which can include sensitive values. They're deleted when their pull request is closed, but a log that a replica uploads while it can't be reached for that cleanup stays in the bucket. Add an S3 lifecycle rule that expires objects under the log store's prefix after a retention period that suits you (for example 30 to 90 days) as a backstop.
 
 ### `--enable-policy-checks` <Badge text="v0.17.0" type="info"/>
 
@@ -1183,6 +1187,10 @@ ATLANTIS_KUBERNETES_IDENTITY="atlantis-0"
 ```
 
 Unique identity of this replica, used as the holder of its Leases. Defaults to `$POD_NAME`, then the hostname.
+
+Each replica needs its own identity: don't set this flag in configuration shared by every replica. Each run of the process also gets a random ID, and pull request locks are held as `<identity>/<ID>`. So two processes with the same identity never share a lock: a shared value, a force-deleted pod whose process is still running, or one still on an earlier version during an upgrade. The second process logs an error, sets `atlantis_cluster_identity_conflict` to 1 and stays not ready until the first one stops. Membership Leases keep `<identity>` as the holder and record the ID in an annotation, so replicas on earlier versions still read member names correctly during a rolling upgrade.
+
+After a crash, a restarted replica waits for the Leases of its previous run to expire: up to 15 seconds before it rejoins the cluster, and up to 30 seconds before it can lock a pull request that run was working on. A graceful shutdown releases them, so a normal restart doesn't wait.
 
 ### `--kubernetes-namespace`
 

@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,14 +31,13 @@ import (
 	"github.com/runatlantis/atlantis/server/events/vcs"
 	"github.com/runatlantis/atlantis/server/events/webhooks"
 	"github.com/runatlantis/atlantis/server/logging"
+	"github.com/runatlantis/atlantis/server/utils"
 	tally "github.com/uber-go/tally/v4"
 )
 
 const atlantisTokenHeader = "X-Atlantis-Token"
 
 var nonPRPullCounter atomic.Int64
-
-var apiErrorURLCredentialRE = regexp.MustCompile(`(?i)(https?://)([^\s/@]+:)?[^\s/@]+@`)
 
 type APIController struct {
 	APISecret                       []byte
@@ -269,7 +267,7 @@ func sanitizeAPIErrorString(ctx *command.Context, message string) string {
 		message = sanitizeRepoCloneURL(message, ctx.HeadRepo)
 		message = sanitizeRepoCloneURL(message, ctx.Pull.BaseRepo)
 	}
-	return apiErrorURLCredentialRE.ReplaceAllString(message, "$1<redacted>@")
+	return utils.RedactURLCredentials(message)
 }
 
 func sanitizeRepoCloneURL(message string, repo models.Repo) string {
@@ -302,7 +300,7 @@ func (a *APIController) Plan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ctx.CommandSkipped {
-		defer a.Locker.UnlockByPull(ctx.HeadRepo.FullName, ctx.Pull.Num) // nolint: errcheck
+		defer a.Locker.UnlockByPull(ctx.Pull.BaseRepo, ctx.Pull.Num) // nolint: errcheck
 	}
 
 	statusCode := http.StatusOK
@@ -339,7 +337,7 @@ func (a *APIController) Apply(w http.ResponseWriter, r *http.Request) {
 		responder.writeJSON(w, http.StatusOK, result)
 		return
 	}
-	defer a.Locker.UnlockByPull(ctx.HeadRepo.FullName, ctx.Pull.Num) // nolint: errcheck
+	defer a.Locker.UnlockByPull(ctx.Pull.BaseRepo, ctx.Pull.Num) // nolint: errcheck
 
 	// The API apply endpoint runs plan first. Refresh PR status afterward so
 	// apply requirements evaluate the VCS state the plan phase just produced.
@@ -522,7 +520,7 @@ func (a *APIController) apiSetup(ctx *command.Context, cmdName command.Name) (er
 	baseRepo := ctx.Pull.BaseRepo
 	headRepo := ctx.HeadRepo
 
-	unlockFn, err := a.WorkingDirLocker.TryLock(baseRepo.FullName, pull.Num, events.DefaultWorkspace, events.DefaultRepoRelDir, "", cmdName, events.WorkingDirLockMetadataForPull(pull))
+	unlockFn, err := a.WorkingDirLocker.TryLock(baseRepo, pull.Num, events.DefaultWorkspace, events.DefaultRepoRelDir, "", cmdName, events.WorkingDirLockMetadataForPull(pull))
 	if err != nil {
 		return err
 	}
@@ -1307,7 +1305,7 @@ func (e *apiRemediationExecutor) ExecutePlan(repository, ref, vcsType, projectNa
 	if err != nil {
 		return "", nil, err
 	}
-	defer e.controller.Locker.UnlockByPull(ctx.HeadRepo.FullName, ctx.Pull.Num) // nolint: errcheck
+	defer e.controller.Locker.UnlockByPull(ctx.Pull.BaseRepo, ctx.Pull.Num) // nolint: errcheck
 
 	output, driftSummary := planRemediationOutput(result)
 
@@ -1387,7 +1385,7 @@ func (e *apiRemediationExecutor) ExecuteApplyProjects(repository, ref, vcsType s
 	if err != nil {
 		return nil, fmt.Errorf("plan failed: %w", err)
 	}
-	defer e.controller.Locker.UnlockByPull(ctx.HeadRepo.FullName, ctx.Pull.Num) // nolint: errcheck
+	defer e.controller.Locker.UnlockByPull(ctx.Pull.BaseRepo, ctx.Pull.Num) // nolint: errcheck
 
 	remediationResults := projectRemediationResultsFromPlan(projects, planResult)
 	if planResult.HasErrors() {
@@ -1482,7 +1480,7 @@ func (e *apiRemediationExecutor) ExecuteApply(repository, ref, vcsType, projectN
 	if err != nil {
 		return "", fmt.Errorf("plan failed: %w", err)
 	}
-	defer e.controller.Locker.UnlockByPull(ctx.HeadRepo.FullName, ctx.Pull.Num) // nolint: errcheck
+	defer e.controller.Locker.UnlockByPull(ctx.Pull.BaseRepo, ctx.Pull.Num) // nolint: errcheck
 	if planResult.HasErrors() {
 		output, _ := planRemediationOutput(planResult)
 		return output.String(), fmt.Errorf("plan had errors")
@@ -2221,7 +2219,7 @@ func (a *APIController) DetectDrift(w http.ResponseWriter, r *http.Request) {
 		responder.InternalError(w, r, err)
 		return
 	}
-	defer a.Locker.UnlockByPull(ctx.HeadRepo.FullName, ctx.Pull.Num) // nolint: errcheck
+	defer a.Locker.UnlockByPull(ctx.Pull.BaseRepo, ctx.Pull.Num) // nolint: errcheck
 
 	// Process results and store drift data
 	detectionResult := models.NewDriftDetectionResult(request.Repository)

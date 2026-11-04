@@ -16,8 +16,6 @@ import (
 	"github.com/runatlantis/atlantis/server/controllers"
 	"github.com/runatlantis/atlantis/server/controllers/web_templates"
 	tMocks "github.com/runatlantis/atlantis/server/controllers/web_templates/mocks"
-	"github.com/runatlantis/atlantis/server/core/db"
-	"github.com/runatlantis/atlantis/server/core/kube/kubedb/kubedbtest"
 	"github.com/runatlantis/atlantis/server/core/locking"
 
 	"github.com/gorilla/mux"
@@ -25,7 +23,6 @@ import (
 	"github.com/runatlantis/atlantis/server/events"
 
 	"github.com/runatlantis/atlantis/server/core/locking/mocks"
-	"github.com/runatlantis/atlantis/server/events/command"
 	mocks2 "github.com/runatlantis/atlantis/server/events/mocks"
 	"github.com/runatlantis/atlantis/server/events/models"
 	vcsmocks "github.com/runatlantis/atlantis/server/events/vcs/mocks"
@@ -279,69 +276,24 @@ func TestDeleteLock_OldFormat(t *testing.T) {
 	cp.VerifyWasCalled(Never()).CreateComment(Any[logging.SimpleLogging](), Any[models.Repo](), Any[int](), Any[string](), Any[string]())
 }
 
-func TestDeleteLock_UpdateProjectStatus(t *testing.T) {
-	t.Log("When deleting a lock, pull status has to be updated to reflect discarded plan")
+// When the discard cannot be recorded the lock is kept, so the pull request
+// must not be told the plan was discarded.
+func TestDeleteLock_DiscardFailed(t *testing.T) {
 	RegisterMockTestingT(t)
-
-	repoName := "owner/repo"
-	projectPath := "path"
-	workspaceName := "workspace"
-
 	cp := vcsmocks.NewMockClient()
-	l := mocks2.NewMockDeleteLockCommand()
-	workingDir := mocks2.NewMockWorkingDir()
-	workingDirLocker := events.NewDefaultWorkingDirLocker()
-	pull := models.PullRequest{
-		BaseRepo: models.Repo{FullName: repoName},
-	}
-	When(l.DeleteLock(Any[logging.SimpleLogging](), Eq("id"))).ThenReturn(&models.ProjectLock{
-		Pull:      pull,
-		Workspace: workspaceName,
-		Project: models.Project{
-			Path:         projectPath,
-			RepoFullName: repoName,
-		},
-	}, nil)
-	var database db.Database = kubedbtest.New(t)
-	defer closeTestDatabase(t, database)
-	// Seed the DB with a successful plan for that project (that is later discarded).
-	_, err := database.UpdatePullWithResults(pull, []command.ProjectResult{
-		{
-			Command:    command.Plan,
-			RepoRelDir: projectPath,
-			Workspace:  workspaceName,
-			ProjectCommandOutput: command.ProjectCommandOutput{
-				PlanSuccess: &models.PlanSuccess{
-					TerraformOutput: "tf-output",
-					LockURL:         "lock-url",
-				},
-			},
-		},
-	})
-	Ok(t, err)
+	dlc := mocks2.NewMockDeleteLockCommand()
+	When(dlc.DeleteLock(Any[logging.SimpleLogging](), Eq("id"))).ThenReturn(nil, errors.New("recording the plan as discarded: timeout; the lock was kept, try again"))
 	lc := controllers.LocksController{
-		DeleteLockCommand: l,
+		DeleteLockCommand: dlc,
 		Logger:            logging.NewNoopLogger(t),
 		VCSClient:         cp,
-		WorkingDirLocker:  workingDirLocker,
-		WorkingDir:        workingDir,
-		Database:          database,
 	}
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req = mux.SetURLVars(req, map[string]string{"id": "id"})
 	w := httptest.NewRecorder()
 	lc.DeleteLock(w, req)
-	ResponseContains(t, w, http.StatusOK, "Deleted lock id 'id'")
-	status, err := database.GetPullStatus(pull)
-	Ok(t, err)
-	Assert(t, status.Projects != nil, "status projects was nil")
-	Equals(t, []models.ProjectStatus{
-		{
-			Workspace:  workspaceName,
-			RepoRelDir: projectPath,
-			Status:     models.DiscardedPlanStatus,
-		},
-	}, status.Projects)
+	ResponseContains(t, w, http.StatusInternalServerError, "the lock was kept")
+	cp.VerifyWasCalled(Never()).CreateComment(Any[logging.SimpleLogging](), Any[models.Repo](), Any[int](), Any[string](), Any[string]())
 }
 
 func TestDeleteLock_CommentFailed(t *testing.T) {
@@ -356,8 +308,6 @@ func TestDeleteLock_CommentFailed(t *testing.T) {
 	cp := vcsmocks.NewMockClient()
 	workingDir := mocks2.NewMockWorkingDir()
 	workingDirLocker := events.NewDefaultWorkingDirLocker()
-	var database db.Database = kubedbtest.New(t)
-	defer closeTestDatabase(t, database)
 	When(cp.CreateComment(Any[logging.SimpleLogging](), Any[models.Repo](), Any[int](), Any[string](), Any[string]())).ThenReturn(errors.New("err"))
 	lc := controllers.LocksController{
 		DeleteLockCommand: dlc,
@@ -365,7 +315,6 @@ func TestDeleteLock_CommentFailed(t *testing.T) {
 		VCSClient:         cp,
 		WorkingDir:        workingDir,
 		WorkingDirLocker:  workingDirLocker,
-		Database:          database,
 	}
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req = mux.SetURLVars(req, map[string]string{"id": "id"})
@@ -381,8 +330,6 @@ func TestDeleteLock_CommentSuccess(t *testing.T) {
 	dlc := mocks2.NewMockDeleteLockCommand()
 	workingDir := mocks2.NewMockWorkingDir()
 	workingDirLocker := events.NewDefaultWorkingDirLocker()
-	var database db.Database = kubedbtest.New(t)
-	defer closeTestDatabase(t, database)
 
 	pull := models.PullRequest{
 		BaseRepo: models.Repo{FullName: "owner/repo"},
@@ -399,7 +346,6 @@ func TestDeleteLock_CommentSuccess(t *testing.T) {
 		DeleteLockCommand: dlc,
 		Logger:            logging.NewNoopLogger(t),
 		VCSClient:         cp,
-		Database:          database,
 		WorkingDir:        workingDir,
 		WorkingDirLocker:  workingDirLocker,
 	}
@@ -411,9 +357,4 @@ func TestDeleteLock_CommentSuccess(t *testing.T) {
 	cp.VerifyWasCalled(Once()).CreateComment(Any[logging.SimpleLogging](), Eq(pull.BaseRepo), Eq(pull.Num),
 		Eq("**Warning**: The plan for dir: `path` workspace: `workspace` was **discarded** via the Atlantis UI.\n\n"+
 			"To `apply` this plan you must run `plan` again."), Eq(""))
-}
-
-func closeTestDatabase(t *testing.T, database db.Database) {
-	t.Helper()
-	Ok(t, database.Close())
 }

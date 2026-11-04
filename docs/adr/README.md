@@ -12,6 +12,7 @@ Architecture Decision Records (ADRs) preserve important design choices and their
 | [0004](0004-separate-backend-config-override.md) | Separate override for repo-side backend_config | Proposed |
 | [0005](0005-check-websocket-origin-by-default.md) | Check the websocket origin by default | Proposed |
 | [0006](0006-structured-audit-events.md) | Structured audit events | Proposed |
+| [0007](0007-bounded-metric-labels-and-histograms.md) | Bounded metric labels and histograms | Proposed |
 
 Update this table when adding or changing an ADR.
 

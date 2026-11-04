@@ -67,9 +67,9 @@ FROM debian:${DEBIAN_TAG} AS debian-base
 
 # Define package versions for Debian
 # renovate: datasource=deb depName=ca-certificates
-ENV DEBIAN_CA_CERTIFICATES_VERSION="20250419"
+ENV DEBIAN_CA_CERTIFICATES_VERSION="20250419+deb13u1"
 # renovate: datasource=deb depName=curl
-ENV DEBIAN_CURL_VERSION="8.14.1-2+deb13u5"
+ENV DEBIAN_CURL_VERSION="8.14.1-2+deb13u7"
 # renovate: datasource=deb depName=git
 ENV DEBIAN_GIT_VERSION="1:2.47.3-0+deb13u1"
 # renovate: datasource=deb depName=unzip
@@ -81,7 +81,10 @@ ENV DEBIAN_DUMB_INIT_VERSION="1.2.5-3"
 # renovate: datasource=deb depName=gnupg
 ENV DEBIAN_GNUPG_VERSION="2.4.7-21+deb13u1"
 # renovate: datasource=deb depName=openssl
-ENV DEBIAN_OPENSSL_VERSION="3.5.7-1~deb13u2"
+ENV DEBIAN_OPENSSL_VERSION="3.5.7-1~deb13u3"
+# Node.js (for CDK Terrain) needs libatomic on linux/arm/v7.
+# renovate: datasource=deb depName=libatomic1
+ENV DEBIAN_LIBATOMIC1_VERSION="14.2.0-19"
 
 # Set up the 'atlantis' user and adjust permissions. User with uid 1000 is for backwards compatibility
 RUN groupadd --gid 1000 atlantis && \
@@ -101,7 +104,8 @@ RUN apt-get update && \
     openssh-server=${DEBIAN_OPENSSH_SERVER_VERSION} \
     dumb-init=${DEBIAN_DUMB_INIT_VERSION} \
     gnupg=${DEBIAN_GNUPG_VERSION} \
-    openssl=${DEBIAN_OPENSSL_VERSION} && \
+    openssl=${DEBIAN_OPENSSL_VERSION} \
+    libatomic1=${DEBIAN_LIBATOMIC1_VERSION} && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -203,9 +207,22 @@ RUN ./download-release.sh \
 # target. Debian's own nodejs is older than cdktn supports.
 FROM deps AS cdktn-deps
 
+# Inherited from deps; repeated so linters see that the checksum pipe below
+# runs with pipefail.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG TARGETPLATFORM
 ARG NODE_VERSION
 ARG CDKTN_VERSION
+# The Node.js archive is .tar.xz; the slim Debian base has no xz. Only this
+# build stage needs it: the runtime images copy /opt/node from here.
+# renovate: datasource=deb depName=xz-utils
+ENV DEBIAN_XZ_UTILS_VERSION="5.8.1-1+deb13u2"
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends xz-utils=${DEBIAN_XZ_UTILS_VERSION} && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+# npm and cdktn start with `#!/usr/bin/env node`.
+ENV PATH="/opt/node/bin:${PATH}"
 WORKDIR /tmp/build
 RUN case ${TARGETPLATFORM} in \
         "linux/amd64") NODE_ARCH=x64 ;; \
@@ -258,9 +275,9 @@ COPY --from=deps /opt/terragrunt/bin/ /usr/local/bin/
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 # renovate: datasource=apk depName=ca-certificates
-ENV CA_CERTIFICATES_VERSION="20260909-r0"
+ENV CA_CERTIFICATES_VERSION="20261020-r0"
 # renovate: datasource=apk depName=curl
-ENV CURL_VERSION="8.22.0-r0"
+ENV CURL_VERSION="8.23.0-r0"
 # renovate: datasource=apk depName=git
 ENV GIT_VERSION="2.54.0-r0"
 # renovate: datasource=apk depName=unzip
@@ -343,7 +360,7 @@ COPY --from=tf-deps /usr/local/bin/tofu/tofu* /usr/local/bin/
 # target, which carries no bundled toolchains.
 ARG CDKTN_VERSION
 # renovate: datasource=apk depName=nodejs
-ENV NODEJS_VERSION="24.18.1-r0"
+ENV NODEJS_VERSION="24.22.1-r1"
 # renovate: datasource=apk depName=npm
 ENV NPM_VERSION="11.12.1-r0"
 USER root

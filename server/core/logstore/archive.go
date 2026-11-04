@@ -40,7 +40,25 @@ type ArchiveLogStore struct {
 	// retries bounds upload attempts; backoff doubles from backoff.
 	retries int
 	backoff time.Duration
+
+	mu sync.Mutex
+	// inflight has an entry per upload in progress, by job ID, so DeletePull
+	// can stop and wait for its pull's uploads.
+	inflight map[string]*inflightUpload
 }
+
+// inflightUpload is one upload in progress.
+type inflightUpload struct {
+	pull Pull
+	// cancel is closed to stop waiting for a retry.
+	cancel     chan struct{}
+	cancelOnce sync.Once
+	done       chan struct{}
+}
+
+// uploadWait bounds how long DeletePull waits for a pull's uploads; an upload
+// still running after it removes what it wrote itself.
+const uploadWait = objstore.OpTimeout
 
 var _ LogStore = (*ArchiveLogStore)(nil)
 
@@ -48,10 +66,26 @@ const pointerKeyMeta = "log-key"
 
 // NewArchiveLogStore wraps local so completed logs are archived to bucket.
 func NewArchiveLogStore(local *FileLogStore, bucket *objstore.Bucket, logger logging.SimpleLogging) *ArchiveLogStore {
-	a := &ArchiveLogStore{local: local, bucket: bucket, logger: logger, retries: 5, backoff: time.Second}
-	// onComplete runs with the local store's locks held; only start the upload.
+	a := &ArchiveLogStore{local: local, bucket: bucket, logger: logger, retries: 5, backoff: time.Second, inflight: map[string]*inflightUpload{}}
+	// onComplete runs with the local store's locks held; only register and
+	// start the upload. It never runs for a job after its pull was deleted:
+	// DeletePull holds the same locks.
 	local.onComplete = func(pull Pull, jobID, path string) {
-		a.uploads.Go(func() { a.upload(pull, jobID, path) })
+		u := &inflightUpload{pull: pull, cancel: make(chan struct{}), done: make(chan struct{})}
+		a.mu.Lock()
+		a.inflight[jobID] = u
+		a.mu.Unlock()
+		a.uploads.Go(func() {
+			defer func() {
+				a.mu.Lock()
+				if a.inflight[jobID] == u {
+					delete(a.inflight, jobID)
+				}
+				a.mu.Unlock()
+				close(u.done)
+			}()
+			a.upload(pull, jobID, path, u.cancel)
+		})
 	}
 	return a
 }
@@ -68,14 +102,34 @@ func (a *ArchiveLogStore) pointerKey(jobID string) string {
 	return a.bucket.Key("jobs", jobID)
 }
 
-func (a *ArchiveLogStore) upload(pull Pull, jobID, path string) {
+func (a *ArchiveLogStore) upload(pull Pull, jobID, path string, cancel <-chan struct{}) {
 	var err error
 	for attempt := range a.retries {
 		if attempt > 0 {
-			time.Sleep(a.backoff << (attempt - 1))
+			select {
+			case <-cancel:
+				return
+			case <-time.After(a.backoff << (attempt - 1)):
+			}
 		}
-		if err = a.uploadOnce(pull, jobID, path); err == nil || errors.Is(err, os.ErrNotExist) {
-			return // done, or the pull was deleted meanwhile
+		if a.local.jobDeleted(jobID) {
+			// Its pull request was deleted meanwhile. An earlier attempt may
+			// have written the log before failing on the pointer.
+			if attempt > 0 {
+				a.removeArchived(pull, jobID)
+			}
+			return
+		}
+		if err = a.uploadOnce(pull, jobID, path); errors.Is(err, os.ErrNotExist) {
+			return // its pull request was deleted meanwhile
+		}
+		if err == nil {
+			if a.local.jobDeleted(jobID) {
+				// Deleted while writing, after DeletePull stopped
+				// waiting: remove what this upload wrote.
+				a.removeArchived(pull, jobID)
+			}
+			return
 		}
 		a.logger.Warn("job log archive: uploading job %s (attempt %d): %s", jobID, attempt+1, err)
 	}
@@ -170,10 +224,23 @@ func replayLines(r io.Reader, fn func(string) bool) error {
 	return sc.Err()
 }
 
+// removeArchived deletes a job's archived log and pointer.
+func (a *ArchiveLogStore) removeArchived(pull Pull, jobID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), objstore.OpTimeout)
+	defer cancel()
+	if err := errors.Join(a.bucket.Delete(ctx, a.pointerKey(jobID)), a.bucket.Delete(ctx, a.logKey(pull, jobID))); err != nil {
+		a.logger.Warn("job log archive: removing job %s of a deleted pull request: %s", jobID, err)
+	}
+}
+
 // DeletePull implements LogStore. Local and archived logs are both removed;
-// all failures are returned.
+// all failures are returned. The local store first records the pull's jobs
+// as deleted, so they write and upload nothing more; then the pull's uploads
+// in progress are stopped or waited for, so none writes after the listing
+// below.
 func (a *ArchiveLogStore) DeletePull(pull Pull) error {
 	errs := []error{a.local.DeletePull(pull)}
+	a.waitForUploads(pull)
 	ctx := context.Background()
 	prefix := a.pullPrefix(pull)
 	for key, err := range a.bucket.List(ctx, prefix) {
@@ -191,6 +258,30 @@ func (a *ArchiveLogStore) DeletePull(pull Pull) error {
 		return fmt.Errorf("deleting job logs for %s#%d: %w", pull.RepoFullName, pull.Num, err)
 	}
 	return nil
+}
+
+// waitForUploads stops the pull's uploads that are waiting to retry and waits
+// up to uploadWait for those that are writing.
+func (a *ArchiveLogStore) waitForUploads(pull Pull) {
+	a.mu.Lock()
+	var ups []*inflightUpload
+	for _, u := range a.inflight {
+		if u.pull == pull {
+			ups = append(ups, u)
+		}
+	}
+	a.mu.Unlock()
+	deadline := time.NewTimer(uploadWait)
+	defer deadline.Stop()
+	for _, u := range ups {
+		u.cancelOnce.Do(func() { close(u.cancel) })
+		select {
+		case <-u.done:
+		case <-deadline.C:
+			a.logger.Warn("job log archive: uploads of %s#%d still running after %s; they remove what they write", pull.RepoFullName, pull.Num, uploadWait)
+			return
+		}
+	}
 }
 
 // Close implements LogStore: it flushes local logs, then waits up to 30s for

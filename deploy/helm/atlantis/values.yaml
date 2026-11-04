@@ -2,9 +2,13 @@
 # webhooks that reach another replica are forwarded to it.
 replicaCount: 2
 
+# -- This fork's image. Upstream Atlantis images lack its Kubernetes-native
+# code. The tag defaults to "v" + the chart's appVersion, the tag a release
+# publishes; until that release exists, set a published tag such as "dev"
+# (built from master) or "dev-<commit>".
 image:
-  repository: ghcr.io/runatlantis/atlantis
-  tag: ""          # defaults to the chart appVersion
+  repository: ghcr.io/kubelantis/katlantis
+  tag: ""
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
@@ -134,10 +138,14 @@ networkPolicy:
 # move to other replicas immediately; this only bounds in-flight work.
 terminationGracePeriodSeconds: 3600
 
-# -- Per-replica volume for clones and plan files. With persistence a
-# restarted replica keeps its plans; applies are routed to the replica that
-# made the plan. Configure an S3 plan store (external_stores) to also survive
-# losing a replica's volume or scaling down.
+# -- Per-replica volume for clones and plan files. Applies are routed to the
+# replica that made the plan, so with persistence its plans survive restarts,
+# and reschedules that keep the volume. While that replica is away, applies of
+# its plans wait up to --cluster-plan-holder-wait-seconds, then fail until it
+# is back; the plans are not lost. Scaling a replica away deletes its volume
+# and its plans, as does losing a node-local volume. With more than one
+# replica, configure an S3 plan store (external_stores) so any replica can
+# apply.
 persistence:
   enabled: true
   size: 20Gi

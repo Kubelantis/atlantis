@@ -1180,7 +1180,12 @@ func (g *Client) ExchangeCode(logger logging.SimpleLogging, code string) (*Githu
 	ctx := context.Background()
 	cfg, resp, err := g.client.Apps.CompleteAppManifest(ctx, code)
 	if resp != nil {
-		logger.Debug("POST /app-manifests/%s/conversions returned: %v", code, resp.StatusCode)
+		logger.Debug("POST /app-manifests/<code>/conversions returned: %v", resp.StatusCode)
+	}
+	if err != nil && code != "" {
+		// The code is exchanged for the app's credentials and the request
+		// URL, which holds it, is in err; callers log err.
+		err = errors.New(strings.ReplaceAll(err.Error(), code, "<code>"))
 	}
 	data := &GithubAppTemporarySecrets{
 		ID:            cfg.GetID(),

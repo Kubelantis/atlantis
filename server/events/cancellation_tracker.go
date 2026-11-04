@@ -53,5 +53,7 @@ func (p *DefaultCancellationTracker) Clear(pull models.PullRequest) {
 }
 
 func pullKey(pull models.PullRequest) string {
-	return fmt.Sprintf("%s#%d", pull.BaseRepo.FullName, pull.Num)
+	// The repo ID includes the VCS host, so cancelling one pull does not
+	// cancel a pull with the same number of a same-named repo elsewhere.
+	return fmt.Sprintf("%s#%d", pull.BaseRepo.ID(), pull.Num)
 }

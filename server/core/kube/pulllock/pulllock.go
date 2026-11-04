@@ -4,7 +4,10 @@
 // in-process locker is enough. During a membership change (scale up/down, a
 // rolling update) two replicas may briefly both believe they own a pull; this
 // locker closes that window with a per-pull Lease. The Lease is re-entrant for
-// the replica holding it, so parallel project commands on one replica share it.
+// the process holding it, so parallel project commands on one replica share
+// it. It records the process's incarnation as well as the replica name, so a
+// second process with the same name (a force-deleted pod still running, or a
+// shared --kubernetes-identity) cannot share it.
 //
 // Fencing: a replica stops trusting its lease once it has gone Duration/2
 // without a successful renewal, or as soon as another replica holds it. Other
@@ -31,10 +34,15 @@ import (
 	"github.com/runatlantis/atlantis/server/core/kube/cluster"
 	"github.com/runatlantis/atlantis/server/events"
 	"github.com/runatlantis/atlantis/server/events/command"
+	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/runatlantis/atlantis/server/logging"
 )
 
 var _ events.WorkingDirLocker = (*Locker)(nil)
+
+// The project runner finds the fencing check with a type assertion, so a
+// signature drift would disable it silently; keep it checked at compile time.
+var _ events.PullLockFencer = (*Locker)(nil)
 
 // Config configures a Locker.
 type Config struct {
@@ -42,25 +50,31 @@ type Config struct {
 	Client    client.Client
 	Namespace string
 	Identity  string
+	// Incarnation identifies this process; see kube.NewIncarnation. A
+	// random one is used when empty, so another process with the same
+	// Identity never shares a pull's lease.
+	Incarnation string
 	// Duration is how long the lease survives without renewal. Defaults to 30s.
 	Duration time.Duration
 	// Timeout bounds each API call. Defaults to 10s.
 	Timeout time.Duration
 	Logger  logging.SimpleLogging
 	// OnLost is called once, in its own goroutine, when a held lease is lost.
-	OnLost func(repoFullName string, pullNum int)
+	OnLost func(repo models.Repo, pullNum int)
 	// Now is the clock; defaults to time.Now.
 	Now func() time.Time
 }
 
 type held struct {
-	refs   int
-	lease  *cluster.TimedLease
+	refs int
+	// leases are the pull's lease and, for one release, its legacy lease;
+	// see acquire.
+	leases []*cluster.TimedLease
 	cancel context.CancelFunc
 	done   chan struct{}
 
-	repoFullName string
-	pullNum      int
+	repo    models.Repo
+	pullNum int
 	// lastRenew is the UnixNano time of the last successful acquire/renew.
 	lastRenew atomic.Int64
 	lost      atomic.Bool
@@ -75,6 +89,9 @@ type Locker struct {
 	// being deleted. acquire waits for it so the delete cannot remove a lease
 	// that was just taken again.
 	releasing map[string]chan struct{}
+	// releasingLegacy is releasing keyed by the legacy lease name of the
+	// pull, so a same-named pull on another VCS host waits too; see acquire.
+	releasingLegacy map[string]chan struct{}
 }
 
 // New returns a Locker.
@@ -88,7 +105,10 @@ func New(cfg Config) *Locker {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &Locker{cfg: cfg, held: map[string]*held{}, releasing: map[string]chan struct{}{}}
+	if cfg.Incarnation == "" {
+		cfg.Incarnation = kube.NewIncarnation()
+	}
+	return &Locker{cfg: cfg, held: map[string]*held{}, releasing: map[string]chan struct{}{}, releasingLegacy: map[string]chan struct{}{}}
 }
 
 // trustWindow is how long a lease is trusted after its last renewal.
@@ -103,40 +123,52 @@ func (l *Locker) markLost(h *held, reason error) {
 	if !h.lost.CompareAndSwap(false, true) {
 		return
 	}
-	l.cfg.Logger.Err("lost pull lock %s for %s#%d: %s; cancelling queued work for the pull", h.lease.Name, h.repoFullName, h.pullNum, reason)
+	l.cfg.Logger.Err("lost pull lock %s for %s#%d: %s; cancelling queued work for the pull", h.leases[0].Name, h.repo.ID(), h.pullNum, reason)
 	if l.cfg.OnLost != nil {
-		go l.cfg.OnLost(h.repoFullName, h.pullNum)
+		go l.cfg.OnLost(h.repo, h.pullNum)
 	}
 }
 
-// Holds reports whether this replica currently holds a trusted lease for
-// the pull, i.e. a command for it is running here.
+// Holds reports whether this replica currently holds a trusted lease for a
+// pull with this repo full name and number on any VCS host, i.e. a command
+// for it is running here. Callers such as the janitor know only the full
+// name, so it errs towards reporting the pull busy.
 func (l *Locker) Holds(repoFullName string, pullNum int) bool {
 	l.mu.Lock()
-	h, ok := l.held[pullKey(repoFullName, pullNum)]
-	l.mu.Unlock()
-	return ok && !l.stale(h)
+	defer l.mu.Unlock()
+	for _, h := range l.held {
+		if h.repo.FullName == repoFullName && h.pullNum == pullNum && !l.stale(h) {
+			return true
+		}
+	}
+	return false
 }
 
 // LostPullLock reports whether this replica held the pull's lease and can no
 // longer trust it. It is false when the pull is not locked here at all.
-func (l *Locker) LostPullLock(repoFullName string, pullNum int) bool {
+func (l *Locker) LostPullLock(repo models.Repo, pullNum int) bool {
 	l.mu.Lock()
-	h, ok := l.held[pullKey(repoFullName, pullNum)]
+	h, ok := l.held[pullKey(repo.ID(), pullNum)]
 	l.mu.Unlock()
 	return ok && l.stale(h)
 }
 
-func pullKey(repoFullName string, pullNum int) string {
-	return repoFullName + "#" + strconv.Itoa(pullNum)
+// pullKey identifies a pull; repoKey is the repo ID, which includes the VCS
+// host, so pulls of same-named repos on two providers do not share a lease.
+func pullKey(repoKey string, pullNum int) string {
+	return repoKey + "#" + strconv.Itoa(pullNum)
 }
 
 // acquire takes (or re-enters) the pull lease and returns its release func.
-func (l *Locker) acquire(repoFullName string, pullNum int, cmdName command.Name) (func(), error) {
-	key := pullKey(repoFullName, pullNum)
+func (l *Locker) acquire(repo models.Repo, pullNum int, cmdName command.Name) (func(), error) {
+	key := pullKey(repo.ID(), pullNum)
+	legacyKey := pullKey(repo.FullName, pullNum)
 	l.mu.Lock()
 	for {
 		ch, ok := l.releasing[key]
+		if !ok {
+			ch, ok = l.releasingLegacy[legacyKey]
+		}
 		if !ok {
 			break
 		}
@@ -158,39 +190,77 @@ func (l *Locker) acquire(repoFullName string, pullNum int, cmdName command.Name)
 			"Wait until that command stops and try again", cmdName, pullNum)
 	}
 
-	lease := &cluster.TimedLease{
-		Client:    l.cfg.Client,
-		Namespace: l.cfg.Namespace,
-		Name:      kube.Name("pulllock", key),
-		Holder:    l.cfg.Identity,
-		Duration:  l.cfg.Duration,
-		Labels: kube.Labels(kube.TypePullLock, map[string]string{
-			kube.LabelRepo: kube.Hash(repoFullName),
-			kube.LabelPull: strconv.Itoa(pullNum),
-		}),
-		Annotations: map[string]string{kube.AnnotationKey: key, kube.AnnotationData: cmdName.String()},
+	// The lease is named by the repo ID. For one release the lease named by
+	// the full name alone, which earlier versions use, is taken too, so a
+	// replica still running an earlier version during a rolling update is
+	// kept out of the pull. Until it is dropped, pulls of same-named repos on
+	// two VCS providers still wait for each other, here as across replicas:
+	// acquiring the legacy lease again here would succeed, as this replica
+	// holds it, and releasing either pull would then delete it under the
+	// other.
+	for _, other := range l.held {
+		if other.repo.FullName == repo.FullName && other.pullNum == pullNum {
+			return func() {}, fmt.Errorf("cannot run %q: pull request %d of a repo with the same name on another VCS host is currently locked on this Atlantis replica.\n"+
+				"Wait until its command is complete and try again", cmdName, pullNum)
+		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), l.cfg.Timeout)
-	err := lease.Acquire(ctx)
-	cancel()
-	if errors.Is(err, cluster.ErrHeld) {
-		return func() {}, fmt.Errorf("cannot run %q: pull request %d is currently running a command on another Atlantis replica (%s).\n"+
-			"Wait until the previous command is complete and try again", cmdName, pullNum, err)
+	leases := []*cluster.TimedLease{
+		l.lease(key, repo.FullName, pullNum, cmdName),
+		l.lease(legacyKey, repo.FullName, pullNum, cmdName),
 	}
-	if err != nil {
+	for i, lease := range leases {
+		ctx, cancel := context.WithTimeout(context.Background(), l.cfg.Timeout)
+		err := lease.Acquire(ctx)
+		cancel()
+		if err == nil {
+			continue
+		}
+		l.releaseLeases(leases[:i])
+		if errors.Is(err, cluster.ErrHeld) {
+			return func() {}, fmt.Errorf("cannot run %q: pull request %d is currently running a command on another Atlantis replica (%s).\n"+
+				"Wait until the previous command is complete and try again", cmdName, pullNum, err)
+		}
 		return func() {}, fmt.Errorf("acquiring pull lock: %w", err)
 	}
 
 	rctx, rcancel := context.WithCancel(context.Background())
-	h := &held{refs: 1, lease: lease, cancel: rcancel, done: make(chan struct{}), repoFullName: repoFullName, pullNum: pullNum}
+	h := &held{refs: 1, leases: leases, cancel: rcancel, done: make(chan struct{}), repo: repo, pullNum: pullNum}
 	h.lastRenew.Store(l.cfg.Now().UnixNano())
 	l.held[key] = h
 	go l.renew(rctx, h)
 	return l.releaseFunc(key, h), nil
 }
 
-// renew renews the lease every Duration/6, so two consecutive failures still
-// fit inside the trust window.
+// lease returns the pull lease named by key.
+func (l *Locker) lease(key, repoFullName string, pullNum int, cmdName command.Name) *cluster.TimedLease {
+	return &cluster.TimedLease{
+		Client:      l.cfg.Client,
+		Namespace:   l.cfg.Namespace,
+		Name:        kube.Name("pulllock", key),
+		Holder:      l.cfg.Identity,
+		Incarnation: l.cfg.Incarnation,
+		Duration:    l.cfg.Duration,
+		Labels: kube.Labels(kube.TypePullLock, map[string]string{
+			kube.LabelRepo: kube.Hash(repoFullName),
+			kube.LabelPull: strconv.Itoa(pullNum),
+		}),
+		Annotations: map[string]string{kube.AnnotationKey: key, kube.AnnotationData: cmdName.String()},
+	}
+}
+
+// releaseLeases deletes leases this replica holds.
+func (l *Locker) releaseLeases(leases []*cluster.TimedLease) {
+	for _, lease := range leases {
+		ctx, cancel := context.WithTimeout(context.Background(), l.cfg.Timeout)
+		if err := lease.Release(ctx); err != nil {
+			l.cfg.Logger.Warn("releasing pull lock %s: %s", lease.Name, err)
+		}
+		cancel()
+	}
+}
+
+// renew renews the leases every Duration/6, so two consecutive failures still
+// fit inside the trust window. Losing either lease loses the pull.
 func (l *Locker) renew(ctx context.Context, h *held) {
 	defer close(h.done)
 	t := time.NewTicker(l.cfg.Duration / 6)
@@ -201,9 +271,17 @@ func (l *Locker) renew(ctx context.Context, h *held) {
 			return
 		case <-t.C:
 			timeout := min(l.cfg.Timeout, l.trustWindow()/2)
-			actx, cancel := context.WithTimeout(ctx, timeout)
-			err := h.lease.Acquire(actx)
-			cancel()
+			var err error
+			name := ""
+			for _, lease := range h.leases {
+				actx, cancel := context.WithTimeout(ctx, timeout)
+				err = lease.Acquire(actx)
+				cancel()
+				if err != nil {
+					name = lease.Name
+					break
+				}
+			}
 			if ctx.Err() != nil {
 				return
 			}
@@ -214,7 +292,7 @@ func (l *Locker) renew(ctx context.Context, h *held) {
 				l.markLost(h, err)
 				return
 			default:
-				l.cfg.Logger.Warn("renewing pull lock %s: %s", h.lease.Name, err)
+				l.cfg.Logger.Warn("renewing pull lock %s: %s", name, err)
 				if l.stale(h) {
 					l.markLost(h, fmt.Errorf("no successful renewal for %s: %w", l.trustWindow(), err))
 					return
@@ -246,31 +324,30 @@ func (l *Locker) release(key string, owner *held) {
 	}
 	delete(l.held, key)
 	done := make(chan struct{})
+	legacyKey := pullKey(h.repo.FullName, h.pullNum)
 	l.releasing[key] = done
+	l.releasingLegacy[legacyKey] = done
 	l.mu.Unlock()
 	defer func() {
 		l.mu.Lock()
 		delete(l.releasing, key)
+		delete(l.releasingLegacy, legacyKey)
 		l.mu.Unlock()
 		close(done)
 	}()
 
 	h.cancel()
 	<-h.done
-	ctx, cancel := context.WithTimeout(context.Background(), l.cfg.Timeout)
-	defer cancel()
-	if err := h.lease.Release(ctx); err != nil {
-		l.cfg.Logger.Warn("releasing pull lock %s: %s", h.lease.Name, err)
-	}
+	l.releaseLeases(h.leases)
 }
 
 // TryLockPull implements events.WorkingDirLocker.
-func (l *Locker) TryLockPull(repoFullName string, pullNum int, cmdName command.Name, metadata events.WorkingDirLockMetadata) (func(), error) {
-	unlockLocal, err := l.cfg.Local.TryLockPull(repoFullName, pullNum, cmdName, metadata)
+func (l *Locker) TryLockPull(repo models.Repo, pullNum int, cmdName command.Name, metadata events.WorkingDirLockMetadata) (func(), error) {
+	unlockLocal, err := l.cfg.Local.TryLockPull(repo, pullNum, cmdName, metadata)
 	if err != nil {
 		return unlockLocal, err
 	}
-	release, err := l.acquire(repoFullName, pullNum, cmdName)
+	release, err := l.acquire(repo, pullNum, cmdName)
 	if err != nil {
 		unlockLocal()
 		return func() {}, err
@@ -279,12 +356,12 @@ func (l *Locker) TryLockPull(repoFullName string, pullNum int, cmdName command.N
 }
 
 // TryLock implements events.WorkingDirLocker.
-func (l *Locker) TryLock(repoFullName string, pullNum int, workspace string, path string, projectName string, cmdName command.Name, metadata events.WorkingDirLockMetadata) (func(), error) {
-	unlockLocal, err := l.cfg.Local.TryLock(repoFullName, pullNum, workspace, path, projectName, cmdName, metadata)
+func (l *Locker) TryLock(repo models.Repo, pullNum int, workspace string, path string, projectName string, cmdName command.Name, metadata events.WorkingDirLockMetadata) (func(), error) {
+	unlockLocal, err := l.cfg.Local.TryLock(repo, pullNum, workspace, path, projectName, cmdName, metadata)
 	if err != nil {
 		return unlockLocal, err
 	}
-	release, err := l.acquire(repoFullName, pullNum, cmdName)
+	release, err := l.acquire(repo, pullNum, cmdName)
 	if err != nil {
 		unlockLocal()
 		return func() {}, err
@@ -294,14 +371,14 @@ func (l *Locker) TryLock(repoFullName string, pullNum int, workspace string, pat
 
 // HasCommandLock implements events.WorkingDirLocker. Commands for a pull run
 // on its owner, so the local view is authoritative.
-func (l *Locker) HasCommandLock(repoFullName string, pullNum int, cmdName command.Name) bool {
-	return l.cfg.Local.HasCommandLock(repoFullName, pullNum, cmdName)
+func (l *Locker) HasCommandLock(repo models.Repo, pullNum int, cmdName command.Name) bool {
+	return l.cfg.Local.HasCommandLock(repo, pullNum, cmdName)
 }
 
 // UnlockByPull implements events.WorkingDirLocker. It clears the local locks
 // but keeps the lease: commands still running here hold references to it and
 // release it when they finish. Dropping it now would let another replica start
 // on the pull while they run.
-func (l *Locker) UnlockByPull(repoFullName string, pullNum int) {
-	l.cfg.Local.UnlockByPull(repoFullName, pullNum)
+func (l *Locker) UnlockByPull(repo models.Repo, pullNum int) {
+	l.cfg.Local.UnlockByPull(repo, pullNum)
 }

@@ -123,7 +123,7 @@ func TestDefaultProjectLocker_TryLockWhenLockedSamePull(t *testing.T) {
 		},
 		nil,
 	)
-	mockLocker.EXPECT().UnlockIfOwnedByPull(expProject, expWorkspace, expPull.Num).Return(nil, nil)
+	mockLocker.EXPECT().UnlockIfOwnedByPull(expProject, expWorkspace, expPull).Return(nil, nil)
 	res, err := locker.TryLock(logging.NewNoopLogger(t), expPull, expUser, expWorkspace, expProject, true)
 	Ok(t, err)
 	Equals(t, true, res.LockAcquired)
@@ -131,6 +131,30 @@ func TestDefaultProjectLocker_TryLockWhenLockedSamePull(t *testing.T) {
 	// UnlockFn should work.
 	err = res.UnlockFn()
 	Ok(t, err)
+}
+
+// A lock held by the pull with the same number on another VCS host is
+// another pull's lock: two providers can serve the same owner/repo.
+func TestDefaultProjectLocker_TryLockWhenLockedBySameNumberOnOtherHost(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	var githubClient *github.Client
+	mockClient := vcs.NewClientProxy(githubClient, nil, nil, nil, nil, nil)
+	mockLocker := mocks.NewMockLocker(ctrl)
+	locker := events.DefaultProjectLocker{
+		Locker:         mockLocker,
+		VCSClient:      mockClient,
+		ExecutableName: "atlantis",
+	}
+	project := models.Project{RepoFullName: "owner/repo", Path: "."}
+	pull := models.PullRequest{Num: 2, BaseRepo: models.Repo{FullName: "owner/repo", VCSHost: models.VCSHost{Hostname: "github.com"}}}
+	other := models.PullRequest{Num: 2, BaseRepo: models.Repo{FullName: "owner/repo", VCSHost: models.VCSHost{Hostname: "gitlab.com"}}}
+	mockLocker.EXPECT().TryLock(project, "default", pull, models.User{}).Return(
+		locking.TryLockResponse{LockAcquired: false, CurrLock: models.ProjectLock{Pull: other}},
+		nil,
+	)
+	res, err := locker.TryLock(logging.NewNoopLogger(t), pull, models.User{}, "default", project, true)
+	Ok(t, err)
+	Assert(t, !res.LockAcquired, "lock held by the same pull number on another host was treated as ours")
 }
 
 func TestDefaultProjectLocker_TryLockUnlocked(t *testing.T) {
@@ -162,7 +186,7 @@ func TestDefaultProjectLocker_TryLockUnlocked(t *testing.T) {
 		},
 		nil,
 	)
-	mockLocker.EXPECT().UnlockIfOwnedByPull(expProject, expWorkspace, expPull.Num).Return(nil, nil)
+	mockLocker.EXPECT().UnlockIfOwnedByPull(expProject, expWorkspace, expPull).Return(nil, nil)
 	res, err := locker.TryLock(logging.NewNoopLogger(t), expPull, expUser, expWorkspace, expProject, true)
 	Ok(t, err)
 	Equals(t, true, res.LockAcquired)
@@ -198,7 +222,7 @@ func TestDefaultProjectLocker_TryLockRepoLockingDisabledUnlockUsesNoOpLocker(t *
 		},
 		nil,
 	)
-	mockNoOpLocker.EXPECT().UnlockIfOwnedByPull(expProject, expWorkspace, expPull.Num).Return(nil, nil)
+	mockNoOpLocker.EXPECT().UnlockIfOwnedByPull(expProject, expWorkspace, expPull).Return(nil, nil)
 
 	res, err := locker.TryLock(logging.NewNoopLogger(t), expPull, expUser, expWorkspace, expProject, false)
 	Ok(t, err)

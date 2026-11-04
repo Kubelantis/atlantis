@@ -216,7 +216,7 @@ func (k *KubeDB) Unlock(p models.Project, workspace string) (*models.ProjectLock
 }
 
 // UnlockIfOwnedByPull implements db.Database.
-func (k *KubeDB) UnlockIfOwnedByPull(p models.Project, workspace string, pullNum int) (*models.ProjectLock, error) {
+func (k *KubeDB) UnlockIfOwnedByPull(p models.Project, workspace string, pull models.PullRequest) (*models.ProjectLock, error) {
 	ctx, cancel := k.ctx()
 	defer cancel()
 	name, _ := k.lockName(p, workspace)
@@ -234,7 +234,7 @@ func (k *KubeDB) UnlockIfOwnedByPull(p models.Project, workspace string, pullNum
 		if err != nil {
 			return err
 		}
-		if l.Pull.Num != pullNum {
+		if !l.Pull.SameAs(pull) {
 			return nil
 		}
 		if err := k.deleteExact(ctx, &lease); err != nil {
@@ -277,6 +277,41 @@ func (k *KubeDB) List() ([]models.ProjectLock, error) {
 	return locks, nil
 }
 
+// UnlockExact implements db.Database.
+func (k *KubeDB) UnlockExact(want models.ProjectLock) (*models.ProjectLock, error) {
+	ctx, cancel := k.ctx()
+	defer cancel()
+	name, _ := k.lockName(want.Project, want.Workspace)
+	var found *models.ProjectLock
+	err := retry.RetryOnConflict(conflictBackoff, func() error {
+		found = nil
+		var lease coordinationv1.Lease
+		err := k.client().Get(ctx, client.ObjectKey{Namespace: k.ns, Name: name}, &lease)
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		l, err := decodeLock(&lease)
+		if err != nil {
+			return err
+		}
+		if !l.Pull.SameAs(want.Pull) || !l.Time.Equal(want.Time) {
+			return nil
+		}
+		if err := k.deleteExact(ctx, &lease); err != nil {
+			return err
+		}
+		found = &l
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("unlocking: %w", err)
+	}
+	return found, nil
+}
+
 // GetLock implements db.Database.
 func (k *KubeDB) GetLock(p models.Project, workspace string) (*models.ProjectLock, error) {
 	ctx, cancel := k.ctx()
@@ -290,12 +325,14 @@ func (k *KubeDB) GetLock(p models.Project, workspace string) (*models.ProjectLoc
 }
 
 // UnlockByPull implements db.Database. It matches the repo name exactly, so
-// "org/repo" does not release "org/repo2".
-func (k *KubeDB) UnlockByPull(repoFullName string, pullNum int) ([]models.ProjectLock, error) {
+// "org/repo" does not release "org/repo2", and the VCS host, so a pull of
+// the same name and number on another host keeps its locks.
+func (k *KubeDB) UnlockByPull(repo models.Repo, pullNum int) ([]models.ProjectLock, error) {
 	ctx, cancel := k.ctx()
 	defer cancel()
+	pull := models.PullRequest{Num: pullNum, BaseRepo: repo}
 	leases, err := k.listLocks(ctx, map[string]string{
-		kube.LabelRepo: kube.Hash(repoFullName),
+		kube.LabelRepo: kube.Hash(repo.FullName),
 		kube.LabelPull: strconv.Itoa(pullNum),
 	})
 	if err != nil {
@@ -307,7 +344,7 @@ func (k *KubeDB) UnlockByPull(repoFullName string, pullNum int) ([]models.Projec
 		if err != nil {
 			return locks, err
 		}
-		if l.Project.RepoFullName != repoFullName || l.Pull.Num != pullNum {
+		if l.Project.RepoFullName != repo.FullName || !l.Pull.SameAs(pull) {
 			continue
 		}
 		if err := k.deleteExact(ctx, &leases[i]); err != nil {

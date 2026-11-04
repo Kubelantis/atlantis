@@ -297,7 +297,7 @@ func TestApplyCommandRunner_IgnoredTargetedDirSkipsBeforeApplyLock(t *testing.T)
 func TestApplyCommandRunner_IgnoredTargetedDirSkipsWhenPlanInFlight(t *testing.T) {
 	locker := events.NewDefaultWorkingDirLocker()
 	modelPull := models.PullRequest{BaseRepo: testdata.GithubRepo, State: models.OpenPullState, Num: testdata.Pull.Num, HeadCommit: "abc123"}
-	unlockPlan, err := locker.TryLockPull(modelPull.BaseRepo.FullName, modelPull.Num, command.Plan, events.WorkingDirLockMetadata{})
+	unlockPlan, err := locker.TryLockPull(modelPull.BaseRepo, modelPull.Num, command.Plan, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 	defer unlockPlan()
 
@@ -321,7 +321,7 @@ func TestApplyCommandRunner_MergeCheckoutIgnoredTargetSkipsBeforeApplyLock(t *te
 func TestApplyCommandRunner_LocalConfigIgnoredTargetSkipsWhenPlanInFlight(t *testing.T) {
 	locker := events.NewDefaultWorkingDirLocker()
 	modelPull := models.PullRequest{BaseRepo: testdata.GithubRepo, State: models.OpenPullState, Num: testdata.Pull.Num, HeadCommit: "abc123"}
-	unlockPlan, err := locker.TryLockPull(modelPull.BaseRepo.FullName, modelPull.Num, command.Plan, events.WorkingDirLockMetadata{})
+	unlockPlan, err := locker.TryLockPull(modelPull.BaseRepo, modelPull.Num, command.Plan, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 	defer unlockPlan()
 
@@ -430,7 +430,7 @@ func testApplyCommandRunnerTargetedApplyBlocksWhenPlanInFlight(t *testing.T, cmd
 		tc.workingDirLocker = locker
 	})
 	modelPull := models.PullRequest{BaseRepo: testdata.GithubRepo, State: models.OpenPullState, Num: testdata.Pull.Num, HeadCommit: "abc123"}
-	unlockPlan, err := locker.TryLockPull(modelPull.BaseRepo.FullName, modelPull.Num, command.Plan, events.WorkingDirLockMetadata{})
+	unlockPlan, err := locker.TryLockPull(modelPull.BaseRepo, modelPull.Num, command.Plan, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 	defer unlockPlan()
 
@@ -1261,12 +1261,12 @@ func TestApplyCommandRunner_GenericApplyHoldsApplyLockDuringPullStatusRefresh(t 
 	locker := events.NewDefaultWorkingDirLocker()
 	refreshObserved := false
 	database := assertApplyLockDB{
-		Database:     realDB,
-		t:            t,
-		locker:       locker,
-		repoFullName: testdata.GithubRepo.FullName,
-		pullNum:      testdata.Pull.Num,
-		called:       &refreshObserved,
+		Database: realDB,
+		t:        t,
+		locker:   locker,
+		repo:     testdata.GithubRepo,
+		pullNum:  testdata.Pull.Num,
+		called:   &refreshObserved,
 	}
 	setup(t, func(tc *TestConfig) {
 		tc.database = database
@@ -1305,7 +1305,7 @@ func TestApplyCommandRunner_GenericApplyHoldsApplyLockDuringCommandBuild(t *test
 		Trigger:  command.CommentTrigger,
 	}
 	When(projectCommandBuilder.BuildApplyCommands(ctx, cmd)).Then(func([]Param) ReturnValues {
-		Assert(t, locker.HasCommandLock(testdata.GithubRepo.FullName, testdata.Pull.Num, command.Apply), "expected apply lock during command build")
+		Assert(t, locker.HasCommandLock(testdata.GithubRepo, testdata.Pull.Num, command.Apply), "expected apply lock during command build")
 		return ReturnValues{[]command.ProjectContext{}, nil}
 	})
 
@@ -1330,7 +1330,7 @@ func TestApplyCommandRunner_GenericApplyHoldsApplyLockDuringExecution(t *testing
 	projectCtx := command.ProjectContext{CommandName: command.Apply, RepoRelDir: "dirA", Workspace: events.DefaultWorkspace, ProjectName: "projA"}
 	When(projectCommandBuilder.BuildApplyCommands(ctx, cmd)).ThenReturn([]command.ProjectContext{projectCtx}, nil)
 	When(projectCommandRunner.Apply(projectCtx)).Then(func([]Param) ReturnValues {
-		Assert(t, locker.HasCommandLock(testdata.GithubRepo.FullName, testdata.Pull.Num, command.Apply), "expected apply lock during project execution")
+		Assert(t, locker.HasCommandLock(testdata.GithubRepo, testdata.Pull.Num, command.Apply), "expected apply lock during project execution")
 		return ReturnValues{command.ProjectCommandOutput{ApplySuccess: "applied"}}
 	})
 
@@ -1353,7 +1353,7 @@ func TestApplyCommandRunner_TargetedApplyHoldsApplyLockDuringCommandBuild(t *tes
 		Trigger:  command.CommentTrigger,
 	}
 	When(projectCommandBuilder.BuildApplyCommands(ctx, cmd)).Then(func([]Param) ReturnValues {
-		Assert(t, locker.HasCommandLock(testdata.GithubRepo.FullName, testdata.Pull.Num, command.Apply), "expected targeted apply lock during command build")
+		Assert(t, locker.HasCommandLock(testdata.GithubRepo, testdata.Pull.Num, command.Apply), "expected targeted apply lock during command build")
 		return ReturnValues{[]command.ProjectContext{}, nil}
 	})
 
@@ -1378,7 +1378,7 @@ func TestApplyCommandRunner_TargetedApplyHoldsApplyLockDuringExecution(t *testin
 	projectCtx := command.ProjectContext{CommandName: command.Apply, RepoRelDir: "dirA", Workspace: events.DefaultWorkspace, ProjectName: "projA"}
 	When(projectCommandBuilder.BuildApplyCommands(ctx, cmd)).ThenReturn([]command.ProjectContext{projectCtx}, nil)
 	When(projectCommandRunner.Apply(projectCtx)).Then(func([]Param) ReturnValues {
-		Assert(t, locker.HasCommandLock(testdata.GithubRepo.FullName, testdata.Pull.Num, command.Apply), "expected targeted apply lock during project execution")
+		Assert(t, locker.HasCommandLock(testdata.GithubRepo, testdata.Pull.Num, command.Apply), "expected targeted apply lock during project execution")
 		return ReturnValues{command.ProjectCommandOutput{ApplySuccess: "applied"}}
 	})
 
@@ -1826,15 +1826,15 @@ func (f failingGetPullStatusDB) GetPullStatus(models.PullRequest) (*models.PullS
 
 type assertApplyLockDB struct {
 	db.Database
-	t            *testing.T
-	locker       events.WorkingDirLocker
-	repoFullName string
-	pullNum      int
-	called       *bool
+	t       *testing.T
+	locker  events.WorkingDirLocker
+	repo    models.Repo
+	pullNum int
+	called  *bool
 }
 
 func (a assertApplyLockDB) GetPullStatus(pull models.PullRequest) (*models.PullStatus, error) {
 	*a.called = true
-	Assert(a.t, a.locker.HasCommandLock(a.repoFullName, a.pullNum, command.Apply), "expected apply lock during pull status refresh")
+	Assert(a.t, a.locker.HasCommandLock(a.repo, a.pullNum, command.Apply), "expected apply lock during pull status refresh")
 	return a.Database.GetPullStatus(pull)
 }

@@ -268,12 +268,12 @@ func TestAPIRemediationExecutor_ExecuteApplyAbortsWhenPreApplyPlanHasErrors(t *t
 	}
 
 	locker := NewMockLocker(gmockCtrl)
-	locker.EXPECT().UnlockByPull(baseRepo.FullName, gomock.Any()).Return(nil, nil).AnyTimes()
+	locker.EXPECT().UnlockByPull(baseRepo, gomock.Any()).Return(nil, nil).AnyTimes()
 	applyLockChecker := NewMockApplyLocker(gmockCtrl)
 	applyLockChecker.EXPECT().CheckApplyLock().Return(locking.ApplyCommandLock{}, nil)
 
 	workingDirLocker := NewMockWorkingDirLocker()
-	When(workingDirLocker.TryLock(Any[string](), Any[int](), Any[string](), Any[string](), Any[string](), Any[command.Name](), Any[events.WorkingDirLockMetadata]())).
+	When(workingDirLocker.TryLock(Any[models.Repo](), Any[int](), Any[string](), Any[string](), Any[string](), Any[command.Name](), Any[events.WorkingDirLockMetadata]())).
 		ThenReturn(func() {}, nil)
 	workingDir := NewMockWorkingDir()
 	When(workingDir.Clone(Any[logging.SimpleLogging](), Any[models.Repo](), Any[models.PullRequest](), Any[string]())).
@@ -343,12 +343,12 @@ func TestAPIRemediationExecutor_ExecuteApplyProjectsSeedsPullStatusForDependenci
 	}
 
 	locker := NewMockLocker(gmockCtrl)
-	locker.EXPECT().UnlockByPull(baseRepo.FullName, gomock.Any()).Return(nil, nil).AnyTimes()
+	locker.EXPECT().UnlockByPull(baseRepo, gomock.Any()).Return(nil, nil).AnyTimes()
 	applyLockChecker := NewMockApplyLocker(gmockCtrl)
 	applyLockChecker.EXPECT().CheckApplyLock().Return(locking.ApplyCommandLock{}, nil)
 
 	workingDirLocker := NewMockWorkingDirLocker()
-	When(workingDirLocker.TryLock(Any[string](), Any[int](), Any[string](), Any[string](), Any[string](), Any[command.Name](), Any[events.WorkingDirLockMetadata]())).
+	When(workingDirLocker.TryLock(Any[models.Repo](), Any[int](), Any[string](), Any[string](), Any[string](), Any[command.Name](), Any[events.WorkingDirLockMetadata]())).
 		ThenReturn(func() {}, nil)
 	workingDir := NewMockWorkingDir()
 	When(workingDir.Clone(Any[logging.SimpleLogging](), Any[models.Repo](), Any[models.PullRequest](), Any[string]())).
@@ -487,11 +487,11 @@ func TestAPIRemediationExecutor_ExecuteApplyProjectsFailsOnOmittedDependency(t *
 	}
 
 	locker := NewMockLocker(gmockCtrl)
-	locker.EXPECT().UnlockByPull(baseRepo.FullName, gomock.Any()).Return(nil, nil).AnyTimes()
+	locker.EXPECT().UnlockByPull(baseRepo, gomock.Any()).Return(nil, nil).AnyTimes()
 	applyLockChecker := NewMockApplyLocker(gmockCtrl)
 	applyLockChecker.EXPECT().CheckApplyLock().Return(locking.ApplyCommandLock{}, nil)
 	workingDirLocker := NewMockWorkingDirLocker()
-	When(workingDirLocker.TryLock(Any[string](), Any[int](), Any[string](), Any[string](), Any[string](), Any[command.Name](), Any[events.WorkingDirLockMetadata]())).
+	When(workingDirLocker.TryLock(Any[models.Repo](), Any[int](), Any[string](), Any[string](), Any[string](), Any[command.Name](), Any[events.WorkingDirLockMetadata]())).
 		ThenReturn(func() {}, nil)
 	workingDir := NewMockWorkingDir()
 	When(workingDir.Clone(Any[logging.SimpleLogging](), Any[models.Repo](), Any[models.PullRequest](), Any[string]())).
@@ -588,12 +588,12 @@ func TestAPIRemediationExecutor_ExecuteApplyProjectsAbortsLaterExecutionGroups(t
 	}
 
 	locker := NewMockLocker(gmockCtrl)
-	locker.EXPECT().UnlockByPull(baseRepo.FullName, gomock.Any()).Return(nil, nil).AnyTimes()
+	locker.EXPECT().UnlockByPull(baseRepo, gomock.Any()).Return(nil, nil).AnyTimes()
 	applyLockChecker := NewMockApplyLocker(gmockCtrl)
 	applyLockChecker.EXPECT().CheckApplyLock().Return(locking.ApplyCommandLock{}, nil)
 
 	workingDirLocker := NewMockWorkingDirLocker()
-	When(workingDirLocker.TryLock(Any[string](), Any[int](), Any[string](), Any[string](), Any[string](), Any[command.Name](), Any[events.WorkingDirLockMetadata]())).
+	When(workingDirLocker.TryLock(Any[models.Repo](), Any[int](), Any[string](), Any[string](), Any[string](), Any[command.Name](), Any[events.WorkingDirLockMetadata]())).
 		ThenReturn(func() {}, nil)
 	workingDir := NewMockWorkingDir()
 	When(workingDir.Clone(Any[logging.SimpleLogging](), Any[models.Repo](), Any[models.PullRequest](), Any[string]())).
@@ -711,12 +711,12 @@ func TestAPIRemediationExecutor_ExecuteApplyProjectsSkipsPRRequirements(t *testi
 	}
 
 	locker := NewMockLocker(gmockCtrl)
-	locker.EXPECT().UnlockByPull(baseRepo.FullName, gomock.Any()).Return(nil, nil).AnyTimes()
+	locker.EXPECT().UnlockByPull(baseRepo, gomock.Any()).Return(nil, nil).AnyTimes()
 	applyLockChecker := NewMockApplyLocker(gmockCtrl)
 	applyLockChecker.EXPECT().CheckApplyLock().Return(locking.ApplyCommandLock{}, nil)
 
 	workingDirLocker := NewMockWorkingDirLocker()
-	When(workingDirLocker.TryLock(Any[string](), Any[int](), Any[string](), Any[string](), Any[string](), Any[command.Name](), Any[events.WorkingDirLockMetadata]())).
+	When(workingDirLocker.TryLock(Any[models.Repo](), Any[int](), Any[string](), Any[string](), Any[string](), Any[command.Name](), Any[events.WorkingDirLockMetadata]())).
 		ThenReturn(func() {}, nil)
 	workingDir := NewMockWorkingDir()
 	When(workingDir.Clone(Any[logging.SimpleLogging](), Any[models.Repo](), Any[models.PullRequest](), Any[string]())).
@@ -874,12 +874,12 @@ func TestAPIRemediationExecutor_ExecuteApplyProjectsRejectsStaleCachedDrift(t *t
 	}
 
 	locker := NewMockLocker(gmockCtrl)
-	locker.EXPECT().UnlockByPull(baseRepo.FullName, gomock.Any()).Return(nil, nil).AnyTimes()
+	locker.EXPECT().UnlockByPull(baseRepo, gomock.Any()).Return(nil, nil).AnyTimes()
 	applyLockChecker := NewMockApplyLocker(gmockCtrl)
 	applyLockChecker.EXPECT().CheckApplyLock().Return(locking.ApplyCommandLock{}, nil)
 
 	workingDirLocker := NewMockWorkingDirLocker()
-	When(workingDirLocker.TryLock(Any[string](), Any[int](), Any[string](), Any[string](), Any[string](), Any[command.Name](), Any[events.WorkingDirLockMetadata]())).
+	When(workingDirLocker.TryLock(Any[models.Repo](), Any[int](), Any[string](), Any[string](), Any[string](), Any[command.Name](), Any[events.WorkingDirLockMetadata]())).
 		ThenReturn(func() {}, nil)
 	workingDir := NewMockWorkingDir()
 	repoDir, checkedOutCommit := initRemediationGitRepo(t)
@@ -940,12 +940,12 @@ func TestDriftApply_NonPRMutableRefChangedDuringApplyFailsClosed(t *testing.T) {
 	}
 
 	locker := NewMockLocker(gmockCtrl)
-	locker.EXPECT().UnlockByPull(baseRepo.FullName, gomock.Any()).Return(nil, nil).AnyTimes()
+	locker.EXPECT().UnlockByPull(baseRepo, gomock.Any()).Return(nil, nil).AnyTimes()
 	applyLockChecker := NewMockApplyLocker(gmockCtrl)
 	applyLockChecker.EXPECT().CheckApplyLock().Return(locking.ApplyCommandLock{}, nil)
 
 	workingDirLocker := NewMockWorkingDirLocker()
-	When(workingDirLocker.TryLock(Any[string](), Any[int](), Any[string](), Any[string](), Any[string](), Any[command.Name](), Any[events.WorkingDirLockMetadata]())).
+	When(workingDirLocker.TryLock(Any[models.Repo](), Any[int](), Any[string](), Any[string](), Any[string](), Any[command.Name](), Any[events.WorkingDirLockMetadata]())).
 		ThenReturn(func() {}, nil)
 	workingDir := NewMockWorkingDir()
 	repoDir, mainCommit, _, _ := initReachabilityGitRepo(t)
@@ -1043,11 +1043,11 @@ func TestDriftApply_NonPRReleaseBranchChangedNoProjectsFailsClosed(t *testing.T)
 	}
 
 	locker := NewMockLocker(gmockCtrl)
-	locker.EXPECT().UnlockByPull(baseRepo.FullName, gomock.Any()).Return(nil, nil).AnyTimes()
+	locker.EXPECT().UnlockByPull(baseRepo, gomock.Any()).Return(nil, nil).AnyTimes()
 	applyLockChecker := NewMockApplyLocker(gmockCtrl)
 	applyLockChecker.EXPECT().CheckApplyLock().Return(locking.ApplyCommandLock{}, nil)
 	workingDirLocker := NewMockWorkingDirLocker()
-	When(workingDirLocker.TryLock(Any[string](), Any[int](), Any[string](), Any[string](), Any[string](), Any[command.Name](), Any[events.WorkingDirLockMetadata]())).
+	When(workingDirLocker.TryLock(Any[models.Repo](), Any[int](), Any[string](), Any[string](), Any[string](), Any[command.Name](), Any[events.WorkingDirLockMetadata]())).
 		ThenReturn(func() {}, nil)
 	workingDir := NewMockWorkingDir()
 	repoDir, _, _, _ := initReachabilityGitRepo(t)
@@ -1121,11 +1121,11 @@ func TestAPIRemediationExecutor_ExecuteApplyProjectsPolicyFailureSkipsApply(t *t
 	}
 
 	locker := NewMockLocker(gmockCtrl)
-	locker.EXPECT().UnlockByPull(baseRepo.FullName, gomock.Any()).Return(nil, nil).AnyTimes()
+	locker.EXPECT().UnlockByPull(baseRepo, gomock.Any()).Return(nil, nil).AnyTimes()
 	applyLockChecker := NewMockApplyLocker(gmockCtrl)
 	applyLockChecker.EXPECT().CheckApplyLock().Return(locking.ApplyCommandLock{}, nil)
 	workingDirLocker := NewMockWorkingDirLocker()
-	When(workingDirLocker.TryLock(Any[string](), Any[int](), Any[string](), Any[string](), Any[string](), Any[command.Name](), Any[events.WorkingDirLockMetadata]())).
+	When(workingDirLocker.TryLock(Any[models.Repo](), Any[int](), Any[string](), Any[string](), Any[string](), Any[command.Name](), Any[events.WorkingDirLockMetadata]())).
 		ThenReturn(func() {}, nil)
 	workingDir := NewMockWorkingDir()
 	When(workingDir.Clone(Any[logging.SimpleLogging](), Any[models.Repo](), Any[models.PullRequest](), Any[string]())).
@@ -1303,10 +1303,10 @@ func TestAPIRemediationExecutor_ExecutePlanPreservesNamedTargetWorkspace(t *test
 	}
 
 	locker := NewMockLocker(gmockCtrl)
-	locker.EXPECT().UnlockByPull(baseRepo.FullName, gomock.Any()).Return(nil, nil).AnyTimes()
+	locker.EXPECT().UnlockByPull(baseRepo, gomock.Any()).Return(nil, nil).AnyTimes()
 
 	workingDirLocker := NewMockWorkingDirLocker()
-	When(workingDirLocker.TryLock(Any[string](), Any[int](), Any[string](), Any[string](), Any[string](), Any[command.Name](), Any[events.WorkingDirLockMetadata]())).
+	When(workingDirLocker.TryLock(Any[models.Repo](), Any[int](), Any[string](), Any[string](), Any[string](), Any[command.Name](), Any[events.WorkingDirLockMetadata]())).
 		ThenReturn(func() {}, nil)
 	workingDir := NewMockWorkingDir()
 	When(workingDir.Clone(Any[logging.SimpleLogging](), Any[models.Repo](), Any[models.PullRequest](), Any[string]())).

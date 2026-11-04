@@ -4,7 +4,6 @@
 package controllers
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -12,7 +11,6 @@ import (
 	"github.com/runatlantis/atlantis/server/controllers/web_templates"
 
 	"github.com/gorilla/mux"
-	"github.com/runatlantis/atlantis/server/core/db"
 	"github.com/runatlantis/atlantis/server/core/locking"
 	"github.com/runatlantis/atlantis/server/events"
 	"github.com/runatlantis/atlantis/server/events/models"
@@ -31,7 +29,6 @@ type LocksController struct {
 	LockDetailTemplate web_templates.TemplateWriter `validate:"required"`
 	WorkingDir         events.WorkingDir            `validate:"required"`
 	WorkingDirLocker   events.WorkingDirLocker      `validate:"required"`
-	Database           db.Database                  `validate:"required"`
 	DeleteLockCommand  events.DeleteLockCommand     `validate:"required"`
 }
 
@@ -131,14 +128,9 @@ func (l *LocksController) DeleteLock(w http.ResponseWriter, r *http.Request) {
 	// installations of Atlantis will have locks in their DB that do not have
 	// this field on PullRequest. We skip commenting in this case.
 	if lock.Pull.BaseRepo != (models.Repo{}) {
-		err := l.Database.UpdateProjectStatus(lock.Pull, lock.Workspace, lock.Project.Path, lock.Project.ProjectName, models.DiscardedPlanStatus)
-		if errors.Is(err, db.ErrProjectNotFound) {
-			l.Logger.Debug("no plan status to discard for dir %q workspace %q project %q", lock.Project.Path, lock.Workspace, lock.Project.ProjectName)
-		} else if err != nil {
-			l.Logger.Err("unable to update project status: %s", err)
-		}
-
-		// Once the lock has been deleted, comment back on the pull request.
+		// DeleteLock recorded the plan as discarded before releasing the
+		// lock, so the comment below is true; on failure it returned an error
+		// above and kept the lock.
 		comment := fmt.Sprintf("**Warning**: The plan for dir: `%s` workspace: `%s` was **discarded** via the Atlantis UI.\n\n"+
 			"To `apply` this plan you must run `plan` again.", lock.Project.Path, lock.Workspace)
 		if err = l.VCSClient.CreateComment(l.Logger, lock.Pull.BaseRepo, lock.Pull.Num, comment, ""); err != nil {
@@ -154,7 +146,7 @@ func (l *LocksController) DeleteLock(w http.ResponseWriter, r *http.Request) {
 // level to log at, code is the HTTP response code.
 func (l *LocksController) respond(w http.ResponseWriter, lvl logging.LogLevel, responseCode int, format string, args ...any) {
 	response := fmt.Sprintf(format, args...)
-	l.Logger.Log(lvl, response)
+	l.Logger.Log(lvl, "%s", response)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(responseCode)
 	fmt.Fprintln(w, response) // #nosec G705 -- response body is served as text/plain, not interpreted as HTML

@@ -21,17 +21,19 @@ webhooks:
   channel: my-channel-id
 ```
 
-If you are deploying Atlantis as a Helm chart, this can be implemented via the `config` parameter available for [chart customizations](https://github.com/runatlantis/helm-charts#customization):
+If you deploy Atlantis with the [Helm chart](deployment.md#kubernetes-helm-chart), set this in its `repoConfig` value, the server-side repo config. Keep the chart's default `repos` and `metrics` blocks when you replace it:
 
 ```yaml
-## Use Server Side Config,
-## ref: https://www.runatlantis.io/docs/server-configuration.html
-config: |
-   ---
-   webhooks:
-     - event: apply
-       kind: slack
-       channel: my-channel-id
+repoConfig: |
+  repos:
+    - id: /.*/
+  metrics:
+    prometheus:
+      endpoint: /metrics
+  webhooks:
+    - event: apply
+      kind: slack
+      channel: my-channel-id
 ```
 
 ### Filter on workspace/branch

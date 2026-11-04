@@ -907,7 +907,7 @@ func (p *DefaultProjectCommandBuilder) discoverAllProjectDirs(ctx *command.Conte
 func (p *DefaultProjectCommandBuilder) buildAllProjectsByCfg(ctx *command.Context, cmdName command.Name, subCmdName string, commentFlags []string, verbose bool) ([]command.ProjectContext, error) {
 	workspace := DefaultWorkspace
 
-	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo.FullName, ctx.Pull.Num, workspace, DefaultRepoRelDir, "", cmdName, WorkingDirLockMetadataForPull(ctx.Pull))
+	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo, ctx.Pull.Num, workspace, DefaultRepoRelDir, "", cmdName, WorkingDirLockMetadataForPull(ctx.Pull))
 	if err != nil {
 		ctx.Log.Warn("workspace was locked")
 		return nil, err
@@ -998,7 +998,7 @@ func (p *DefaultProjectCommandBuilder) buildAllCommandsByCfg(ctx *command.Contex
 	// Need to lock the workspace we're about to clone to.
 	workspace := DefaultWorkspace
 
-	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo.FullName, ctx.Pull.Num, workspace, DefaultRepoRelDir, "", cmdName, WorkingDirLockMetadataForPull(ctx.Pull))
+	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo, ctx.Pull.Num, workspace, DefaultRepoRelDir, "", cmdName, WorkingDirLockMetadataForPull(ctx.Pull))
 	if err != nil {
 		ctx.Log.Warn("workspace was locked")
 		return nil, err
@@ -1086,7 +1086,7 @@ func (p *DefaultProjectCommandBuilder) buildProjectPlanCommand(ctx *command.Cont
 	var pcc []command.ProjectContext
 
 	ctx.Log.Debug("building plan command")
-	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo.FullName, ctx.Pull.Num, workspace, DefaultRepoRelDir, cmd.ProjectName, cmd.Name, WorkingDirLockMetadataForPull(ctx.Pull))
+	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo, ctx.Pull.Num, workspace, DefaultRepoRelDir, cmd.ProjectName, cmd.Name, WorkingDirLockMetadataForPull(ctx.Pull))
 	if err != nil {
 		return pcc, err
 	}
@@ -1425,7 +1425,7 @@ func (p *DefaultProjectCommandBuilder) buildAllProjectCommandsByPlan(ctx *comman
 	if commentCmd.Name == command.Apply {
 		hasActivePlan := false
 		if p.WorkingDirLocker != nil {
-			hasActivePlan = p.WorkingDirLocker.HasCommandLock(ctx.Pull.BaseRepo.FullName, ctx.Pull.Num, command.Plan)
+			hasActivePlan = p.WorkingDirLocker.HasCommandLock(ctx.Pull.BaseRepo, ctx.Pull.Num, command.Plan)
 		}
 		if err := ValidatePlansForApplyWithActivePlan(ctx, plans, hasActivePlan); err != nil {
 			return nil, err
@@ -1435,7 +1435,7 @@ func (p *DefaultProjectCommandBuilder) buildAllProjectCommandsByPlan(ctx *comman
 	var cmds []command.ProjectContext
 	for _, plan := range plans {
 		// Lock all the directories we need to run the command in
-		unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo.FullName, ctx.Pull.Num, plan.Workspace, plan.RepoRelDir, plan.ProjectName, commentCmd.Name, WorkingDirLockMetadataForPull(ctx.Pull))
+		unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo, ctx.Pull.Num, plan.Workspace, plan.RepoRelDir, plan.ProjectName, commentCmd.Name, WorkingDirLockMetadataForPull(ctx.Pull))
 		if err != nil {
 			return nil, err
 		}
@@ -1713,7 +1713,7 @@ func (p *DefaultProjectCommandBuilder) buildProjectCommand(ctx *command.Context,
 		return projCtx, ErrIgnoredTargetedDir
 	}
 
-	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo.FullName, ctx.Pull.Num, workspace, DefaultRepoRelDir, cmd.ProjectName, cmd.Name, WorkingDirLockMetadataForPull(ctx.Pull))
+	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo, ctx.Pull.Num, workspace, DefaultRepoRelDir, cmd.ProjectName, cmd.Name, WorkingDirLockMetadataForPull(ctx.Pull))
 	if err != nil {
 		return projCtx, err
 	}

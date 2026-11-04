@@ -2,10 +2,15 @@
 {{- fail "vcsSecretName is required: create a Secret with your ATLANTIS_* VCS credentials" }}
 {{- end }}
 # A StatefulSet gives every replica a stable name (its identity in the
-# cluster) and its own volume. A restarted replica comes back with the same
-# identity and the same clones and plan files, so the pulls it owned and the
-# plans it made are still there; applies wait for it (see
-# --cluster-plan-holder-wait-seconds) instead of failing on another replica.
+# cluster) and its own volume. A replica that restarts, or is rescheduled with
+# its volume, comes back with the same identity, clones and plan files, and
+# applies of its plans go to it. An apply waits for it up to
+# --cluster-plan-holder-wait-seconds; if it is away longer, that apply fails,
+# but the plans are kept and a retry once it is back uses them if they are
+# still valid. Plans are lost with the volume: when the replica is scaled away
+# (whenScaled: Delete below), or when a node-local volume is lost with its
+# node. With more than one replica, configure a shared plan store
+# (external_stores) so any replica can apply.
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -45,7 +50,7 @@ spec:
       securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: atlantis
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default (printf "v%s" .Chart.AppVersion) }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["server"]
           securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
