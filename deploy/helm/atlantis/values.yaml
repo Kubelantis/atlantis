@@ -2,9 +2,13 @@
 # webhooks that reach another replica are forwarded to it.
 replicaCount: 2
 
+# -- This fork's image. Upstream Atlantis images lack its Kubernetes-native
+# code. The tag defaults to "v" + the chart's appVersion, the tag a release
+# publishes; until that release exists, set a published tag such as "dev"
+# (built from master) or "dev-<commit>".
 image:
-  repository: ghcr.io/runatlantis/atlantis
-  tag: ""          # defaults to the chart appVersion
+  repository: ghcr.io/kubelantis/katlantis
+  tag: ""
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
