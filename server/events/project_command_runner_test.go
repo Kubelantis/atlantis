@@ -2616,22 +2616,22 @@ func (f fakeLivePullHeadFetcher) GetLivePullIdentity(command.ProjectContext) (mo
 	return models.PullRequest{HeadCommit: f.head, BaseBranch: f.base}, f.err
 }
 
-func (l *trackingWorkingDirLocker) TryLock(_ string, _ int, _ string, _ string, _ string, _ command.Name, metadata events.WorkingDirLockMetadata) (func(), error) {
+func (l *trackingWorkingDirLocker) TryLock(_ models.Repo, _ int, _ string, _ string, _ string, _ command.Name, metadata events.WorkingDirLockMetadata) (func(), error) {
 	l.locked = true
 	l.metadata = metadata
 	return func() { l.locked = false }, nil
 }
 
-func (l *trackingWorkingDirLocker) TryLockPull(string, int, command.Name, events.WorkingDirLockMetadata) (func(), error) {
+func (l *trackingWorkingDirLocker) TryLockPull(models.Repo, int, command.Name, events.WorkingDirLockMetadata) (func(), error) {
 	l.locked = true
 	return func() { l.locked = false }, nil
 }
 
-func (l *trackingWorkingDirLocker) HasCommandLock(string, int, command.Name) bool {
+func (l *trackingWorkingDirLocker) HasCommandLock(models.Repo, int, command.Name) bool {
 	return l.locked
 }
 
-func (l *trackingWorkingDirLocker) UnlockByPull(string, int) {
+func (l *trackingWorkingDirLocker) UnlockByPull(models.Repo, int) {
 	l.locked = false
 }
 

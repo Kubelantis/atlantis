@@ -403,7 +403,7 @@ func (p *DefaultProjectCommandRunner) doApprovePolicies(ctx command.ProjectConte
 	ctx.Log.Debug("acquired lock for project")
 
 	// Acquire internal lock for the directory we're going to operate in.
-	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo.FullName, ctx.Pull.Num, ctx.Workspace, ctx.RepoRelDir, ctx.ProjectName, command.ApprovePolicies, p.workingDirLockMetadata(ctx))
+	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo, ctx.Pull.Num, ctx.Workspace, ctx.RepoRelDir, ctx.ProjectName, command.ApprovePolicies, p.workingDirLockMetadata(ctx))
 	if err != nil {
 		return nil, "", err
 	}
@@ -520,7 +520,7 @@ func (p *DefaultProjectCommandRunner) doPolicyCheck(ctx command.ProjectContext) 
 	// Acquire internal lock for the directory we're going to operate in.
 	// We should refactor this to keep the lock for the duration of plan and policy check since as of now
 	// there is a small gap where we don't have the lock and if we can't get this here, we should just unlock the PR.
-	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo.FullName, ctx.Pull.Num, ctx.Workspace, ctx.RepoRelDir, ctx.ProjectName, command.PolicyCheck, p.workingDirLockMetadata(ctx))
+	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo, ctx.Pull.Num, ctx.Workspace, ctx.RepoRelDir, ctx.ProjectName, command.PolicyCheck, p.workingDirLockMetadata(ctx))
 	if err != nil {
 		return nil, "", err
 	}
@@ -680,7 +680,7 @@ func (p *DefaultProjectCommandRunner) doPlan(ctx command.ProjectContext) (*model
 	ctx.Log.Debug("acquired lock for project")
 
 	// Acquire internal lock for the directory we're going to operate in.
-	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo.FullName, ctx.Pull.Num, ctx.Workspace, ctx.RepoRelDir, ctx.ProjectName, command.Plan, p.workingDirLockMetadata(ctx))
+	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo, ctx.Pull.Num, ctx.Workspace, ctx.RepoRelDir, ctx.ProjectName, command.Plan, p.workingDirLockMetadata(ctx))
 	if err != nil {
 		if unlockErr := lockAttempt.UnlockFn(); unlockErr != nil {
 			ctx.Log.Err("error unlocking state after plan error: %v", unlockErr)
@@ -837,7 +837,7 @@ func (p *DefaultProjectCommandRunner) doApply(ctx command.ProjectContext) (apply
 	ctx.Log.Debug("acquired lock for project")
 
 	// Acquire internal lock for the directory we're going to operate in.
-	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo.FullName, ctx.Pull.Num, ctx.Workspace, ctx.RepoRelDir, ctx.ProjectName, command.Apply, p.workingDirLockMetadata(ctx))
+	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo, ctx.Pull.Num, ctx.Workspace, ctx.RepoRelDir, ctx.ProjectName, command.Apply, p.workingDirLockMetadata(ctx))
 	if err != nil {
 		return "", "", "", err
 	}
@@ -934,7 +934,7 @@ func (p *DefaultProjectCommandRunner) doVersion(ctx command.ProjectContext) (ver
 	}
 
 	// Acquire internal lock for the directory we're going to operate in.
-	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo.FullName, ctx.Pull.Num, ctx.Workspace, ctx.RepoRelDir, ctx.ProjectName, command.Version, p.workingDirLockMetadata(ctx))
+	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo, ctx.Pull.Num, ctx.Workspace, ctx.RepoRelDir, ctx.ProjectName, command.Version, p.workingDirLockMetadata(ctx))
 	if err != nil {
 		return "", "", err
 	}
@@ -978,7 +978,7 @@ func (p *DefaultProjectCommandRunner) doImport(ctx command.ProjectContext) (out 
 	ctx.Log.Debug("acquired lock for project")
 
 	// Acquire internal lock for the directory we're going to operate in.
-	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo.FullName, ctx.Pull.Num, ctx.Workspace, ctx.RepoRelDir, ctx.ProjectName, command.Import, p.workingDirLockMetadata(ctx))
+	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo, ctx.Pull.Num, ctx.Workspace, ctx.RepoRelDir, ctx.ProjectName, command.Import, p.workingDirLockMetadata(ctx))
 	if err != nil {
 		return nil, "", err
 	}
@@ -1022,7 +1022,7 @@ func (p *DefaultProjectCommandRunner) doStateRm(ctx command.ProjectContext) (out
 	ctx.Log.Debug("acquired lock for project")
 
 	// Acquire internal lock for the directory we're going to operate in.
-	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo.FullName, ctx.Pull.Num, ctx.Workspace, ctx.RepoRelDir, ctx.ProjectName, command.State, p.workingDirLockMetadata(ctx))
+	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.Pull.BaseRepo, ctx.Pull.Num, ctx.Workspace, ctx.RepoRelDir, ctx.ProjectName, command.State, p.workingDirLockMetadata(ctx))
 	if err != nil {
 		return nil, "", err
 	}
@@ -1091,7 +1091,7 @@ func (p *DefaultProjectCommandRunner) runSteps(steps []valid.Step, ctx command.P
 type PullLockFencer interface {
 	// LostPullLock reports whether this replica held the pull's lock and can
 	// no longer trust it.
-	LostPullLock(repoFullName string, pullNum int) bool
+	LostPullLock(repo models.Repo, pullNum int) bool
 }
 
 // ErrPullLockLost is returned instead of running a step after this replica
@@ -1104,7 +1104,7 @@ func (p *DefaultProjectCommandRunner) runStep(step valid.Step, ctx command.Proje
 	defer func() { tracing.End(span, err) }()
 
 	// Fencing: never start a step (above all plan or apply) without the lock.
-	if f, ok := p.WorkingDirLocker.(PullLockFencer); ok && f.LostPullLock(ctx.Pull.BaseRepo.FullName, ctx.Pull.Num) {
+	if f, ok := p.WorkingDirLocker.(PullLockFencer); ok && f.LostPullLock(ctx.Pull.BaseRepo, ctx.Pull.Num) {
 		return "", ErrPullLockLost
 	}
 

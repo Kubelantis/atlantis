@@ -44,16 +44,19 @@ type workingDirLock struct {
 type WorkingDirLocker interface {
 	// TryLockPull tries to acquire a pull-level lock for a command. It is used to
 	// coordinate commands that can make pull-wide plan state inconsistent.
-	TryLockPull(repoFullName string, pullNum int, cmdName command.Name, metadata WorkingDirLockMetadata) (func(), error)
+	// Locks guard the pull's working directories, which do not carry the VCS
+	// host yet, so pulls of same-named repos on two providers share them; see
+	// workingDirKey.
+	TryLockPull(repo models.Repo, pullNum int, cmdName command.Name, metadata WorkingDirLockMetadata) (func(), error)
 	// TryLock tries to acquire a lock for this repo, pull, workspace, and path.
 	// It returns a function that should be used to unlock the workspace and
 	// an error if the workspace is already locked. The error is expected to
 	// be printed to the pull request.
-	TryLock(repoFullName string, pullNum int, workspace string, path string, projectName string, cmdName command.Name, metadata WorkingDirLockMetadata) (func(), error)
+	TryLock(repo models.Repo, pullNum int, workspace string, path string, projectName string, cmdName command.Name, metadata WorkingDirLockMetadata) (func(), error)
 	// HasCommandLock reports whether this pull request has an active lock for cmdName.
-	HasCommandLock(repoFullName string, pullNum int, cmdName command.Name) bool
+	HasCommandLock(repo models.Repo, pullNum int, cmdName command.Name) bool
 	// UnlockByPull unlocks all workspaces for a specific pull request
-	UnlockByPull(repoFullName string, pullNum int)
+	UnlockByPull(repo models.Repo, pullNum int)
 }
 
 // DefaultWorkingDirLocker implements WorkingDirLocker.
@@ -65,21 +68,30 @@ type DefaultWorkingDirLocker struct {
 	locks map[string]workingDirLock
 }
 
+// workingDirKey identifies the working directories a lock guards. Clone and
+// plan directories are repos/<owner/repo>/<pull>/<workspace>, without the VCS
+// host, so same-named pulls on two VCS providers share them and must wait for
+// each other. Use repo.ID() once directories carry the host (#18).
+func workingDirKey(repo models.Repo) string {
+	return repo.FullName
+}
+
 // NewDefaultWorkingDirLocker is a constructor.
 func NewDefaultWorkingDirLocker() *DefaultWorkingDirLocker {
 	return &DefaultWorkingDirLocker{locks: make(map[string]workingDirLock)}
 }
 
-func (d *DefaultWorkingDirLocker) TryLock(repoFullName string, pullNum int, workspace string, path string, projectName string, cmdName command.Name, metadata WorkingDirLockMetadata) (func(), error) {
+func (d *DefaultWorkingDirLocker) TryLock(repo models.Repo, pullNum int, workspace string, path string, projectName string, cmdName command.Name, metadata WorkingDirLockMetadata) (func(), error) {
+	repoKey := workingDirKey(repo)
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
 	// Unlock releases the pull's project locks, so no command of the pull
 	// starts while it runs; see TryLockPull.
-	if currentLock, exists := d.locks[d.pullKey(repoFullName, pullNum)]; exists && currentLock.Command == command.Unlock {
-		return func() {}, d.pullLockError(repoFullName, pullNum, cmdName, currentLock)
+	if currentLock, exists := d.locks[d.pullKey(repoKey, pullNum)]; exists && currentLock.Command == command.Unlock {
+		return func() {}, d.pullLockError(repoKey, pullNum, cmdName, currentLock)
 	}
-	workspaceKey := d.workspaceKey(repoFullName, pullNum, workspace, path, projectName)
+	workspaceKey := d.workspaceKey(repoKey, pullNum, workspace, path, projectName)
 	if currentLock, exists := d.locks[workspaceKey]; exists {
 		return func() {}, &workingDirLockError{
 			message: fmt.Sprintf("cannot run %q: the %s workspace at path %s is currently locked for this pull request by %q%s.\n"+
@@ -89,17 +101,18 @@ func (d *DefaultWorkingDirLocker) TryLock(repoFullName string, pullNum int, work
 	}
 	d.locks[workspaceKey] = workingDirLock{Command: cmdName, WorkingDirLockMetadata: metadata}
 	return func() {
-		d.unlock(repoFullName, pullNum, workspace, path, projectName)
+		d.unlock(repoKey, pullNum, workspace, path, projectName)
 	}, nil
 }
 
-func (d *DefaultWorkingDirLocker) TryLockPull(repoFullName string, pullNum int, cmdName command.Name, metadata WorkingDirLockMetadata) (func(), error) {
+func (d *DefaultWorkingDirLocker) TryLockPull(repo models.Repo, pullNum int, cmdName command.Name, metadata WorkingDirLockMetadata) (func(), error) {
+	repoKey := workingDirKey(repo)
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
-	pullKey := d.pullKey(repoFullName, pullNum)
+	pullKey := d.pullKey(repoKey, pullNum)
 	if currentLock, exists := d.locks[pullKey]; exists {
-		return func() {}, d.pullLockError(repoFullName, pullNum, cmdName, currentLock)
+		return func() {}, d.pullLockError(repoKey, pullNum, cmdName, currentLock)
 	}
 	var currentLock workingDirLock
 	var exists bool
@@ -108,32 +121,33 @@ func (d *DefaultWorkingDirLocker) TryLockPull(repoFullName string, pullNum int, 
 		// command of the pull: import and state rm hold only workspace locks,
 		// and releasing their project lock would let another pull lock the
 		// project while they still change its state.
-		currentLock, exists = d.findAnyLock(repoFullName, pullNum)
+		currentLock, exists = d.findAnyLock(repoKey, pullNum)
 	} else {
-		currentLock, exists = d.findCommandLock(repoFullName, pullNum, command.Plan, metadata.HeadCommit)
+		currentLock, exists = d.findCommandLock(repoKey, pullNum, command.Plan, metadata.HeadCommit)
 		if !exists && metadata.HeadCommit != "" {
-			currentLock, exists = d.findCommandLock(repoFullName, pullNum, command.Plan, "")
+			currentLock, exists = d.findCommandLock(repoKey, pullNum, command.Plan, "")
 		}
 	}
 	if exists {
-		return func() {}, d.pullLockError(repoFullName, pullNum, cmdName, currentLock)
+		return func() {}, d.pullLockError(repoKey, pullNum, cmdName, currentLock)
 	}
 	d.locks[pullKey] = workingDirLock{Command: cmdName, WorkingDirLockMetadata: metadata}
 	return func() {
-		d.unlockPull(repoFullName, pullNum)
+		d.unlockPull(repoKey, pullNum)
 	}, nil
 }
 
-func (d *DefaultWorkingDirLocker) HasCommandLock(repoFullName string, pullNum int, cmdName command.Name) bool {
+func (d *DefaultWorkingDirLocker) HasCommandLock(repo models.Repo, pullNum int, cmdName command.Name) bool {
+	repoKey := workingDirKey(repo)
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
-	_, exists := d.findCommandLock(repoFullName, pullNum, cmdName, "")
+	_, exists := d.findCommandLock(repoKey, pullNum, cmdName, "")
 	return exists
 }
 
-func (d *DefaultWorkingDirLocker) findCommandLock(repoFullName string, pullNum int, cmdName command.Name, headCommit string) (workingDirLock, bool) {
-	prefix := d.pullLockPrefix(repoFullName, pullNum)
+func (d *DefaultWorkingDirLocker) findCommandLock(repoKey string, pullNum int, cmdName command.Name, headCommit string) (workingDirLock, bool) {
+	prefix := d.pullLockPrefix(repoKey, pullNum)
 	var match workingDirLock
 	var matchKey string
 	for key, currentLock := range d.locks {
@@ -146,9 +160,9 @@ func (d *DefaultWorkingDirLocker) findCommandLock(repoFullName string, pullNum i
 }
 
 // findAnyLock returns the pull's workspace lock with the lowest key, if any.
-func (d *DefaultWorkingDirLocker) findAnyLock(repoFullName string, pullNum int) (workingDirLock, bool) {
-	prefix := d.pullLockPrefix(repoFullName, pullNum)
-	pullKey := d.pullKey(repoFullName, pullNum)
+func (d *DefaultWorkingDirLocker) findAnyLock(repoKey string, pullNum int) (workingDirLock, bool) {
+	prefix := d.pullLockPrefix(repoKey, pullNum)
+	pullKey := d.pullKey(repoKey, pullNum)
 	var match workingDirLock
 	var matchKey string
 	for key, currentLock := range d.locks {
@@ -160,12 +174,12 @@ func (d *DefaultWorkingDirLocker) findAnyLock(repoFullName string, pullNum int) 
 	return match, matchKey != ""
 }
 
-func (d *DefaultWorkingDirLocker) pullLockError(repoFullName string, pullNum int, cmdName command.Name, currentLock workingDirLock) error {
+func (d *DefaultWorkingDirLocker) pullLockError(repoKey string, pullNum int, cmdName command.Name, currentLock workingDirLock) error {
 	metadata := currentLock.WorkingDirLockMetadata
 	metadata.JobURL = ""
 	jobURLs := make(map[string]struct{})
-	prefix := d.pullLockPrefix(repoFullName, pullNum)
-	pullKey := d.pullKey(repoFullName, pullNum)
+	prefix := d.pullLockPrefix(repoKey, pullNum)
+	pullKey := d.pullKey(repoKey, pullNum)
 	for key, lock := range d.locks {
 		if key != pullKey && strings.HasPrefix(key, prefix) && lock.Command == currentLock.Command && lock.HeadCommit == currentLock.HeadCommit && lock.JobURL != "" {
 			jobURLs[lock.JobURL] = struct{}{}
@@ -213,12 +227,13 @@ func WorkingDirLockMetadataForProject(ctx command.ProjectContext, jobURL string)
 }
 
 // UnlockByPull unlocks all workspaces for a specific pull request
-func (d *DefaultWorkingDirLocker) UnlockByPull(repoFullName string, pullNum int) {
+func (d *DefaultWorkingDirLocker) UnlockByPull(repo models.Repo, pullNum int) {
+	repoKey := workingDirKey(repo)
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
 	// Find and remove all locks for this pull request
-	prefix := d.pullLockPrefix(repoFullName, pullNum)
+	prefix := d.pullLockPrefix(repoKey, pullNum)
 	for key := range d.locks {
 		if strings.HasPrefix(key, prefix) {
 			delete(d.locks, key)
@@ -227,19 +242,19 @@ func (d *DefaultWorkingDirLocker) UnlockByPull(repoFullName string, pullNum int)
 }
 
 // Unlock unlocks the workspace for this pull.
-func (d *DefaultWorkingDirLocker) unlock(repoFullName string, pullNum int, workspace string, path string, projectName string) {
+func (d *DefaultWorkingDirLocker) unlock(repoKey string, pullNum int, workspace string, path string, projectName string) {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
-	workspaceKey := d.workspaceKey(repoFullName, pullNum, workspace, path, projectName)
+	workspaceKey := d.workspaceKey(repoKey, pullNum, workspace, path, projectName)
 	delete(d.locks, workspaceKey)
 }
 
-func (d *DefaultWorkingDirLocker) unlockPull(repoFullName string, pullNum int) {
+func (d *DefaultWorkingDirLocker) unlockPull(repoKey string, pullNum int) {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
-	delete(d.locks, d.pullKey(repoFullName, pullNum))
+	delete(d.locks, d.pullKey(repoKey, pullNum))
 }
 
 func (d *DefaultWorkingDirLocker) workspaceKey(repo string, pull int, workspace string, path string, projectName string) string {
