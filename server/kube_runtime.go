@@ -69,6 +69,62 @@ type kubeRuntime struct {
 	replicaCleaner *events.ReplicaCleaner
 	// janitor removes local leftovers of pulls closed while this replica was down.
 	janitor *janitor.Janitor
+
+	// closedPulls and pullCleaner let the leader finish the cleanup of pulls
+	// closed while a command ran; see sweepClosedPulls. Set by wire.
+	closedPulls closedPullLister
+	pullCleaner events.PullCleaner
+}
+
+// closedPullLister lists pulls closed while a command ran whose cleanup
+// hasn't finished. It is implemented by kubedb.KubeDB.
+type closedPullLister interface {
+	ClosedPulls() ([]models.PullRequest, error)
+}
+
+// closedPullSweepInterval is how often the leader retries the cleanup of
+// pulls closed while a command ran.
+const closedPullSweepInterval = 5 * time.Minute
+
+// runLeader runs while this replica leads the cluster.
+func (k *kubeRuntime) runLeader(ctx context.Context) {
+	go k.sweepClosedPulls(ctx)
+	k.housekeeper.Run(ctx)
+}
+
+// sweepClosedPulls retries the cleanup of pulls closed while a command ran.
+// The owner normally finishes it when the command ends; this covers a
+// restart in between, and a command that ran on another replica than the
+// owner.
+func (k *kubeRuntime) sweepClosedPulls(ctx context.Context) {
+	if k.closedPulls == nil || k.pullCleaner == nil {
+		return
+	}
+	t := time.NewTicker(closedPullSweepInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			k.sweepClosedPullsOnce()
+		}
+	}
+}
+
+// sweepClosedPullsOnce runs the cleanup of each closed pull. Cleanup of a
+// pull whose command still runs is deferred again, so this is safe to repeat.
+func (k *kubeRuntime) sweepClosedPullsOnce() {
+	pulls, err := k.closedPulls.ClosedPulls()
+	if err != nil {
+		k.logger.Warn("listing closed pull requests to clean up: %s", err)
+		return
+	}
+	for _, pull := range pulls {
+		if err := k.pullCleaner.CleanUpPull(k.logger, pull.BaseRepo, pull); err != nil {
+			k.logger.Warn("cleaning up closed pull request %s#%d: %s", pull.BaseRepo.FullName, pull.Num, err)
+		}
+	}
 }
 
 // newKubeRuntime connects to the Kubernetes API. c, if non-nil, is used
@@ -145,7 +201,7 @@ func newKubeRuntime(userConfig UserConfig, c client.Client, logger logging.Simpl
 		// The incarnation keeps two processes with one name from both
 		// leading.
 		RestConfig: restCfg, Namespace: ns, Identity: identity + "/" + incarnation, Logger: logger,
-		Run: k.housekeeper.Run,
+		Run: k.runLeader,
 		OnChange: func(isLeader bool, leader string) {
 			if isLeader {
 				leaderGauge.Update(1)
@@ -178,15 +234,19 @@ func (k *kubeRuntime) workingDirLocker(local events.WorkingDirLocker, onLost fun
 
 // kubeDeps are the server components the Kubernetes runtime wires together.
 type kubeDeps struct {
-	CommandRunner       events.ContextCommandRunner
-	PullCleaner         events.PullCleaner
-	PullClosedExecutor  *events.PullClosedExecutor
-	VCSClient           vcs.Client
-	Database            db.Database
-	WorkingDir          events.WorkingDir
-	WorkingDirLocker    events.WorkingDirLocker
-	JobOutput           jobs.ProjectCommandOutputHandler
-	CancellationTracker events.CancellationTracker
+	CommandRunner      events.ContextCommandRunner
+	PullCleaner        events.PullCleaner
+	PullClosedExecutor *events.PullClosedExecutor
+	VCSClient          vcs.Client
+	Database           db.Database
+	WorkingDir         events.WorkingDir
+	WorkingDirLocker   events.WorkingDirLocker
+	// LocalWorkingDirLocker is this replica's in-process working-dir locker,
+	// without the cluster-wide pull lease. Peer cleanup checks it: the owner
+	// holds the lease while it asks peers to clean up.
+	LocalWorkingDirLocker events.WorkingDirLocker
+	JobOutput             jobs.ProjectCommandOutputHandler
+	CancellationTracker   events.CancellationTracker
 	// LocalLogs is the replica's own job log files; nil when logs are off.
 	LocalLogs *logstore.FileLogStore
 	DataDir   string
@@ -216,7 +276,17 @@ func (k *kubeRuntime) wire(d kubeDeps) *clusterrpc.Router {
 	}
 	// Closing a pull also removes the copies other replicas hold.
 	d.PullClosedExecutor.Peers = router
-	k.replicaCleaner = &events.ReplicaCleaner{WorkingDir: d.WorkingDir, CancellationTracker: d.CancellationTracker}
+	// Cleanup waits for the pull's running commands; a pull closed while one
+	// runs is recorded, and finished by its owner or by the leader's sweep.
+	d.PullClosedExecutor.WorkingDirLocker = d.WorkingDirLocker
+	if closed, ok := d.Database.(events.ClosedPullRecorder); ok {
+		d.PullClosedExecutor.Closed = closed
+	}
+	if lister, ok := d.Database.(closedPullLister); ok {
+		k.closedPulls = lister
+		k.pullCleaner = router
+	}
+	k.replicaCleaner = &events.ReplicaCleaner{WorkingDir: d.WorkingDir, CancellationTracker: d.CancellationTracker, WorkingDirLocker: d.LocalWorkingDirLocker}
 	if pj, ok := d.JobOutput.(events.PullJobsCleaner); ok {
 		k.replicaCleaner.Jobs = pj
 	}

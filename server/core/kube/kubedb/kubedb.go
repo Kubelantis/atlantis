@@ -606,6 +606,57 @@ func (k *KubeDB) PullStatusExists(repoFullName string, pullNum int) (bool, error
 	return false, nil
 }
 
+// MarkPullClosed implements events.ClosedPullRecorder: it marks the pull's
+// status as closed, creating it if needed. DeletePullStatus removes the mark
+// with the status when the cleanup finishes.
+func (k *KubeDB) MarkPullClosed(pull models.PullRequest) error {
+	ctx, cancel := k.ctx()
+	defer cancel()
+	return retry.RetryOnConflict(conflictBackoff, func() error {
+		obj, err := k.getPull(ctx, pull)
+		if err != nil {
+			return err
+		}
+		if obj == nil {
+			if err := k.writePull(ctx, nil, pull, models.PullStatus{Pull: pull}, ""); err != nil {
+				return err
+			}
+			if obj, err = k.getPull(ctx, pull); err != nil {
+				return err
+			}
+			if obj == nil {
+				return fmt.Errorf("pull status for %s#%d vanished while marking it closed", pull.BaseRepo.FullName, pull.Num)
+			}
+		}
+		if _, ok := obj.Annotations[kube.AnnotationClosedAt]; ok {
+			return nil
+		}
+		if obj.Annotations == nil {
+			obj.Annotations = map[string]string{}
+		}
+		obj.Annotations[kube.AnnotationClosedAt] = time.Now().UTC().Format(time.RFC3339)
+		return k.client().Update(ctx, obj)
+	})
+}
+
+// ClosedPulls returns the pulls marked by MarkPullClosed whose cleanup hasn't
+// finished.
+func (k *KubeDB) ClosedPulls() ([]models.PullRequest, error) {
+	ctx, cancel := k.ctx()
+	defer cancel()
+	var list v1alpha1.PullStatusList
+	if err := k.client().List(ctx, &list, client.InNamespace(k.ns)); err != nil {
+		return nil, fmt.Errorf("listing pull statuses: %w", err)
+	}
+	var pulls []models.PullRequest
+	for _, item := range list.Items {
+		if _, ok := item.Annotations[kube.AnnotationClosedAt]; ok {
+			pulls = append(pulls, pullFromAPI(item.Spec.Pull))
+		}
+	}
+	return pulls, nil
+}
+
 // PlanHolder returns the replica that made the pull's latest plan, or "".
 func (k *KubeDB) PlanHolder(repo models.Repo, pullNum int) (string, error) {
 	ctx, cancel := k.ctx()

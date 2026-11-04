@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"text/template"
 
 	"github.com/runatlantis/atlantis/server/logging"
@@ -18,6 +19,7 @@ import (
 	"github.com/runatlantis/atlantis/server/core/db"
 	"github.com/runatlantis/atlantis/server/core/locking"
 	"github.com/runatlantis/atlantis/server/core/runtime"
+	"github.com/runatlantis/atlantis/server/events/command"
 	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/runatlantis/atlantis/server/events/vcs"
 	"github.com/runatlantis/atlantis/server/jobs"
@@ -53,6 +55,66 @@ type PullClosedExecutor struct {
 	// other replica. With several replicas a pull's clones and job output can
 	// be spread across them (e.g. plans made on one, applies on another).
 	Peers PeerCleaner
+	// WorkingDirLocker, if set, keeps cleanup from running under a command of
+	// the pull: cleanup holds the pull's lock, and a pull closed while a
+	// command runs is cleaned up when it finishes (see PullIdle).
+	WorkingDirLocker WorkingDirLocker
+	// Closed, if set, durably records a pull closed while a command ran, so
+	// its cleanup is retried after a restart.
+	Closed ClosedPullRecorder
+
+	pendingMu sync.Mutex
+	// pending holds pulls closed while a command ran, by working-dir key.
+	pending map[string]pendingCleanup
+}
+
+// ClosedPullRecorder durably records a pull closed while one of its commands
+// was running. The record goes when the pull's status is deleted at the end
+// of its cleanup. It is implemented by kubedb.KubeDB.
+type ClosedPullRecorder interface {
+	MarkPullClosed(pull models.PullRequest) error
+}
+
+type pendingCleanup struct {
+	logger logging.SimpleLogging
+	repo   models.Repo
+	pull   models.PullRequest
+}
+
+func pendingKey(repoKey string, pullNum int) string {
+	return fmt.Sprintf("%s#%d", repoKey, pullNum)
+}
+
+// deferCleanup records that pull was closed while a command ran.
+func (p *PullClosedExecutor) deferCleanup(logger logging.SimpleLogging, repo models.Repo, pull models.PullRequest, busy error) {
+	logger.Info("pull request closed while a command is running; cleaning up when it finishes: %s", busy)
+	if p.Closed != nil {
+		if err := p.Closed.MarkPullClosed(pull); err != nil {
+			logger.Err("recording the closed pull request for later cleanup: %s", err)
+		}
+	}
+	p.pendingMu.Lock()
+	defer p.pendingMu.Unlock()
+	if p.pending == nil {
+		p.pending = map[string]pendingCleanup{}
+	}
+	p.pending[pendingKey(workingDirKey(repo), pull.Num)] = pendingCleanup{logger: logger, repo: repo, pull: pull}
+}
+
+// PullIdle is the working-dir locker's idle hook: it finishes the cleanup of
+// a pull closed while one of its commands ran.
+func (p *PullClosedExecutor) PullIdle(repoKey string, pullNum int) {
+	key := pendingKey(repoKey, pullNum)
+	p.pendingMu.Lock()
+	c, ok := p.pending[key]
+	delete(p.pending, key)
+	p.pendingMu.Unlock()
+	if !ok {
+		return
+	}
+	if err := p.CleanUpPull(c.logger, c.repo, c.pull); err != nil {
+		c.logger.Err("cleaning up closed pull request: %s", err)
+	}
 }
 
 // PullJobsCleaner drops all job output of a pull request, whatever project
@@ -75,6 +137,9 @@ type ReplicaCleaner struct {
 	WorkingDir          WorkingDir
 	Jobs                PullJobsCleaner
 	CancellationTracker CancellationTracker
+	// WorkingDirLocker, if set, keeps a command of the pull running on this
+	// replica from having its clones deleted; they are left to the janitor.
+	WorkingDirLocker WorkingDirLocker
 }
 
 // CleanUpReplica implements the replica-local part of closing a pull.
@@ -84,6 +149,14 @@ func (c *ReplicaCleaner) CleanUpReplica(logger logging.SimpleLogging, repo model
 	}
 	if c.CancellationTracker != nil {
 		c.CancellationTracker.Clear(pull)
+	}
+	if c.WorkingDirLocker != nil {
+		unlock, err := c.WorkingDirLocker.TryLockPull(repo, pull.Num, command.Unlock, WorkingDirLockMetadataForPull(pull))
+		if err != nil {
+			logger.Info("not deleting clones of closed pull request %d while a command uses them; the janitor removes them later: %s", pull.Num, err)
+			return nil
+		}
+		defer unlock()
 	}
 	if err := c.WorkingDir.Delete(logger, repo, pull); err != nil {
 		return fmt.Errorf("cleaning workspace: %w", err)
@@ -113,6 +186,17 @@ func (t *PullClosedEventTemplate) Execute(wr io.Writer, data any) error {
 
 // CleanUpPull cleans up after a closed pull request.
 func (p *PullClosedExecutor) CleanUpPull(logger logging.SimpleLogging, repo models.Repo, pull models.PullRequest) error {
+	// Hold the pull's lock so no command of the pull runs while its files and
+	// locks are removed. Taken as for unlock, it waits for every running
+	// command, including import and state rm.
+	if p.WorkingDirLocker != nil {
+		unlock, err := p.WorkingDirLocker.TryLockPull(repo, pull.Num, command.Unlock, WorkingDirLockMetadataForPull(pull))
+		if err != nil {
+			p.deferCleanup(logger, repo, pull, err)
+			return nil
+		}
+		defer unlock()
+	}
 	pullStatus, err := p.Database.GetPullStatus(pull)
 	if err != nil {
 		// Log and continue to clean up other resources.

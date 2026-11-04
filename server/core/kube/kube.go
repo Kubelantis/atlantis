@@ -44,6 +44,9 @@ const (
 	// AnnotationReplica holds the replica name of a Lease's holder, whose
 	// holderIdentity is <replica>/<incarnation>; see NewIncarnation.
 	AnnotationReplica = "atlantis.runatlantis.io/replica"
+	// AnnotationClosedAt marks a PullStatus whose pull was closed while a
+	// command ran, so its cleanup is still to finish.
+	AnnotationClosedAt = "atlantis.runatlantis.io/closed-at"
 	// AnnotationIncarnation holds the holder's incarnation on leases whose
 	// holderIdentity is the replica name alone (membership leases).
 	AnnotationIncarnation = "atlantis.runatlantis.io/incarnation"

@@ -5,8 +5,10 @@
 package events_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/runatlantis/atlantis/server/events"
 	"github.com/runatlantis/atlantis/server/events/command"
@@ -384,4 +386,30 @@ func TestTryLockSameNamedRepoOnOtherHostSharesTheWorkingDir(t *testing.T) {
 	unlockOther, err := locker.TryLock(gitlab, 1, "default", ".", "", command.Plan, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 	unlockOther()
+}
+
+// The idle hook fires when the last lock of a pull is released, not before.
+func TestWorkingDirLocker_IdleHookFiresWhenPullIsIdle(t *testing.T) {
+	locker := events.NewDefaultWorkingDirLocker()
+	idle := make(chan string, 4)
+	locker.SetIdleHook(func(repoKey string, pullNum int) { idle <- fmt.Sprintf("%s#%d", repoKey, pullNum) })
+
+	unlockPull, err := locker.TryLockPull(repo, 1, command.Apply, events.WorkingDirLockMetadata{})
+	Ok(t, err)
+	unlockWs, err := locker.TryLock(repo, 1, workspace, path, projectName, command.Apply, events.WorkingDirLockMetadata{})
+	Ok(t, err)
+
+	unlockWs()
+	select {
+	case got := <-idle:
+		t.Fatalf("idle hook fired while the pull lock was held: %s", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+	unlockPull()
+	select {
+	case got := <-idle:
+		Equals(t, repo.FullName+"#1", got)
+	case <-time.After(5 * time.Second):
+		t.Fatal("idle hook did not fire once the pull was idle")
+	}
 }

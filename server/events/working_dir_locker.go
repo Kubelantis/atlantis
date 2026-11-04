@@ -66,6 +66,33 @@ type DefaultWorkingDirLocker struct {
 	mutex sync.Mutex
 	// locks is a map of workspaces and their owning command metadata.
 	locks map[string]workingDirLock
+	// onIdle, if set, is called in its own goroutine when the last lock of a
+	// pull is released; see SetIdleHook.
+	onIdle func(repoKey string, pullNum int)
+}
+
+// SetIdleHook sets fn to be called, in its own goroutine, when the last lock
+// of a pull is released. repoKey is the repo's working-dir key (its full
+// name). Pull-close cleanup uses it to finish once running commands end.
+func (d *DefaultWorkingDirLocker) SetIdleHook(fn func(repoKey string, pullNum int)) {
+	d.mutex.Lock()
+	defer d.mutex.Unlock()
+	d.onIdle = fn
+}
+
+// notifyIfIdle calls the idle hook if pull holds no lock. The caller holds
+// mutex.
+func (d *DefaultWorkingDirLocker) notifyIfIdle(repoKey string, pullNum int) {
+	if d.onIdle == nil {
+		return
+	}
+	prefix := d.pullLockPrefix(repoKey, pullNum)
+	for key := range d.locks {
+		if strings.HasPrefix(key, prefix) {
+			return
+		}
+	}
+	go d.onIdle(repoKey, pullNum)
 }
 
 // workingDirKey identifies the working directories a lock guards. Clone and
@@ -248,6 +275,7 @@ func (d *DefaultWorkingDirLocker) unlock(repoKey string, pullNum int, workspace 
 
 	workspaceKey := d.workspaceKey(repoKey, pullNum, workspace, path, projectName)
 	delete(d.locks, workspaceKey)
+	d.notifyIfIdle(repoKey, pullNum)
 }
 
 func (d *DefaultWorkingDirLocker) unlockPull(repoKey string, pullNum int) {
@@ -255,6 +283,7 @@ func (d *DefaultWorkingDirLocker) unlockPull(repoKey string, pullNum int) {
 	defer d.mutex.Unlock()
 
 	delete(d.locks, d.pullKey(repoKey, pullNum))
+	d.notifyIfIdle(repoKey, pullNum)
 }
 
 func (d *DefaultWorkingDirLocker) workspaceKey(repo string, pull int, workspace string, path string, projectName string) string {

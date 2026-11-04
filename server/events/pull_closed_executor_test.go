@@ -7,6 +7,7 @@ package events_test
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/runatlantis/atlantis/server/core/kube/kubedb/kubedbtest"
 	"github.com/runatlantis/atlantis/server/core/logstore"
@@ -406,4 +407,72 @@ func (s *countingPlanStore) DeleteForPull(string, string, int) error {
 }
 func (s *countingPlanStore) DeletePlanForProject(string, string, int, string, string, string) error {
 	return nil
+}
+
+// Closing a pull while one of its commands runs doesn't delete its files or
+// release its locks under it. The close is recorded, and the cleanup runs
+// when the command finishes.
+func TestCleanUpPullWaitsForRunningCommand(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	RegisterMockTestingT(t)
+	w := mocks.NewMockWorkingDir()
+	ctrl := gomock.NewController(t)
+	l := lockmocks.NewMockLocker(ctrl)
+	db := kubedbtest.New(t)
+	t.Cleanup(func() { db.Close() })
+	locker := events.NewDefaultWorkingDirLocker()
+	pce := &events.PullClosedExecutor{
+		Locker:           l,
+		VCSClient:        vcsmocks.NewMockClient(),
+		WorkingDir:       w,
+		Database:         db,
+		WorkingDirLocker: locker,
+		Closed:           db,
+	}
+	locker.SetIdleHook(pce.PullIdle)
+
+	// An apply of the pull is running.
+	unlockPull, err := locker.TryLockPull(testdata.GithubRepo, testdata.Pull.Num, command.Apply, events.WorkingDirLockMetadata{})
+	Ok(t, err)
+	unlockWs, err := locker.TryLock(testdata.GithubRepo, testdata.Pull.Num, "default", ".", "", command.Apply, events.WorkingDirLockMetadata{})
+	Ok(t, err)
+
+	cleaned := make(chan struct{})
+	l.EXPECT().UnlockByPull(testdata.GithubRepo, testdata.Pull.Num).DoAndReturn(func(models.Repo, int) ([]models.ProjectLock, error) {
+		close(cleaned)
+		return nil, nil
+	})
+
+	Ok(t, pce.CleanUpPull(logger, testdata.GithubRepo, testdata.Pull))
+	w.VerifyWasCalled(Never()).Delete(Any[logging.SimpleLogging](), Any[models.Repo](), Any[models.PullRequest]())
+	closed, err := db.ClosedPulls()
+	Ok(t, err)
+	Equals(t, 1, len(closed))
+	Equals(t, testdata.Pull.Num, closed[0].Num)
+
+	// The apply finishes: the cleanup runs.
+	unlockWs()
+	unlockPull()
+	select {
+	case <-cleaned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cleanup did not run once the command finished")
+	}
+	w.VerifyWasCalledEventually(Once(), 5*time.Second).Delete(Any[logging.SimpleLogging](), Eq(testdata.GithubRepo), Eq(testdata.Pull))
+}
+
+// A peer doesn't delete clones that a command of the pull is using on it;
+// its janitor removes them later.
+func TestCleanUpReplicaSkipsClonesInUse(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	RegisterMockTestingT(t)
+	w := mocks.NewMockWorkingDir()
+	locker := events.NewDefaultWorkingDirLocker()
+	unlock, err := locker.TryLock(testdata.GithubRepo, testdata.Pull.Num, "default", ".", "", command.Plan, events.WorkingDirLockMetadata{})
+	Ok(t, err)
+	defer unlock()
+	c := &events.ReplicaCleaner{WorkingDir: w, WorkingDirLocker: locker}
+
+	Ok(t, c.CleanUpReplica(logger, testdata.GithubRepo, testdata.Pull))
+	w.VerifyWasCalled(Never()).Delete(Any[logging.SimpleLogging](), Any[models.Repo](), Any[models.PullRequest]())
 }
