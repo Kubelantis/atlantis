@@ -5,8 +5,10 @@ package github_test
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -211,4 +213,22 @@ func userTransportResponse(req *http.Request) *http.Response {
 		Body:       http.NoBody,
 		Request:    req,
 	}
+}
+
+// The manifest code is exchanged for the app's credentials, so a failed
+// exchange, which may leave it usable, must not put it in the error the
+// caller logs, nor in the debug log.
+func TestClient_ExchangeCodeErrorOmitsCode(t *testing.T) {
+	logger := logging.NewNoopLogger(t).WithHistory()
+	defer disableSSLVerification()()
+	// GitHub answers 404 for an unknown or used code.
+	ts := httptest.NewTLSServer(http.NotFoundHandler())
+	t.Cleanup(ts.Close)
+	anonClient, err := github.New(strings.TrimPrefix(ts.URL, "https://"), &github.AnonymousCredentials{}, github.Config{}, 0, logger)
+	Ok(t, err)
+
+	_, err = anonClient.ExchangeCode(logger, "s3cr3t-manifest-code")
+	Assert(t, err != nil, "exchanging an unknown code must fail")
+	Assert(t, !strings.Contains(err.Error(), "s3cr3t-manifest-code"), "the error contains the code: %s", err)
+	Assert(t, !strings.Contains(logger.GetHistory(), "s3cr3t-manifest-code"), "the code was logged: %s", logger.GetHistory())
 }

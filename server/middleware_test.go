@@ -129,3 +129,30 @@ func TestRequestLogger_RoutineRequestsStayAtDebug(t *testing.T) {
 	Equals(t, 0, len(infoOrAbove(serveLogged(t, http.MethodGet, "/healthz", nil))))
 	Equals(t, 0, len(infoOrAbove(serveLogged(t, http.MethodPost, "/events", nil))))
 }
+
+// Query values can be credentials, such as the GitHub App manifest code on
+// /github-app/exchange-code, so only allowlisted ones are logged, at any
+// level.
+func TestRequestLogger_RedactsQueryValues(t *testing.T) {
+	asUser := func(r *http.Request) { r.SetBasicAuth("user", "password") }
+	history := serveLogged(t, http.MethodGet, "/github-app/exchange-code?code=s3cr3t-code&state=xyz", asUser)
+	Equals(t, []string{`[INFO] GET /github-app/exchange-code?code=<redacted>&state=<redacted> from 203.0.113.5:1234 as "user": HTTP 200`}, infoOrAbove(history))
+	Assert(t, !strings.Contains(history, "s3cr3t-code"), "the exchange code was logged: %s", history)
+	Assert(t, !strings.Contains(history, "xyz"), "a query value was logged: %s", history)
+
+	// A failed login logs no query value either.
+	history = serveLogged(t, http.MethodGet, "/github-app/exchange-code?code=s3cr3t-code", func(r *http.Request) { r.SetBasicAuth("mallory", "guess") })
+	Assert(t, !strings.Contains(history, "s3cr3t-code"), "the exchange code was logged: %s", history)
+}
+
+// A supplied Authorization header that is not valid Basic credentials is a
+// failed login too. It is logged without its contents.
+func TestRequestLogger_LogsUnparsableAuthorization(t *testing.T) {
+	for _, header := range []string{"Basic !!!not-base64", "Basic bm9jb2xvbg==", "Bearer some-token"} {
+		history := serveLogged(t, http.MethodGet, "/", func(r *http.Request) { r.Header.Set("Authorization", header) })
+		Equals(t, []string{`[WARN] failed web login with an unparsable Authorization header from 203.0.113.5:1234 for GET /`}, infoOrAbove(history))
+		Assert(t, !strings.Contains(history, strings.TrimPrefix(strings.TrimPrefix(header, "Basic "), "Bearer ")), "the header was logged: %s", history)
+	}
+	// No credentials at all is the browser's first request, not an attempt.
+	Equals(t, 0, len(infoOrAbove(serveLogged(t, http.MethodGet, "/", nil))))
+}
