@@ -16,12 +16,22 @@ spec:
           labels: {severity: warning}
           annotations:
             summary: No Atlantis replica holds the leader Lease; stale Leases are not being cleaned up.
+        # Each ready replica is scraped once, through this release's Service,
+        # and reports how many live members it sees. Compare that with the
+        # ready replicas, which works at any HPA size, and with the configured
+        # floor, which catches replicas that are down: the HPA's minReplicas,
+        # or replicaCount without HPA (the StatefulSet ignores replicaCount
+        # when HPA manages it).
         - alert: AtlantisMembershipDegraded
-          expr: min(atlantis_cluster_members{namespace="{{ .Release.Namespace }}"}) < {{ .Values.replicaCount }}
+          {{- $members := printf "atlantis_cluster_members{namespace=%q, service=%q}" .Release.Namespace (include "atlantis.fullname" .) }}
+          expr: |
+            min({{ $members }}) < count({{ $members }})
+            or
+            min({{ $members }}) < {{ if .Values.autoscaling.enabled }}{{ .Values.autoscaling.minReplicas }}{{ else }}{{ .Values.replicaCount }}{{ end }}
           for: 10m
           labels: {severity: warning}
           annotations:
-            summary: Fewer Atlantis replicas are live members than configured.
+            summary: An Atlantis replica sees fewer live members than there are ready replicas, or fewer than the configured minimum.
         - alert: AtlantisDuplicateIdentity
           expr: max(atlantis_cluster_identity_conflict{namespace="{{ .Release.Namespace }}"}) > 0
           for: 2m
