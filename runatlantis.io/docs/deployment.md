@@ -28,10 +28,9 @@ Bitbucket Server, then Atlantis needs to be routable from the private host and A
 
 ### Data
 
-Atlantis has no external database. Atlantis stores Terraform plan files on disk.
-If Atlantis loses that data in between a `plan` and `apply` cycle, then users will have
-to re-run `plan`. Because of this, you may want to provision a persistent disk
-for Atlantis.
+Atlantis has no external database. With the [Helm chart](#kubernetes-helm-chart), it keeps locks and pull request status in the Kubernetes API, and Terraform plan files on each replica's volume.
+If a plan file is lost in between a `plan` and `apply` cycle, then users will have
+to re-run `plan`. To keep plans available to every replica, configure a shared plan store (see [`--enable-external-stores`](server-configuration.md#enable-external-stores)).
 
 ## Deployment
 
@@ -48,52 +47,51 @@ Pick your deployment type:
 
 ### Kubernetes Helm Chart
 
-Atlantis has an [official Helm chart](https://github.com/runatlantis/helm-charts/tree/main/charts/atlantis)
+This fork has its own Helm chart, in [`deploy/helm/atlantis`](https://github.com/Kubelantis/katlantis/tree/master/deploy/helm/atlantis) in this repository. It isn't published to a Helm repository, and it isn't the upstream `runatlantis/helm-charts` chart: its values differ, and upstream values don't apply. It runs Atlantis as a StatefulSet that keeps locks and pull request status in the Kubernetes API, so several replicas can run at once. See [Kubernetes-native Atlantis](https://github.com/Kubelantis/katlantis/blob/master/docs/kubernetes-native.md) for what it installs and how it works.
 
 To install:
 
-1. Add the runatlantis helm chart repository to helm
+1. Clone this repository, at the commit you deploy:
 
     ```bash
-    helm repo add runatlantis https://runatlantis.github.io/helm-charts
+    git clone https://github.com/Kubelantis/katlantis.git
+    cd katlantis
     ```
 
-1. `cd` into a directory where you're going to configure your Atlantis Helm chart
-1. Create a `values.yaml` file by running
+1. Build the Atlantis image from it and push it to a registry your cluster can pull from. This fork doesn't publish a release image yet, and upstream Atlantis images don't include its Kubernetes-native code. The `alpine` target is the default image; `debian` and the `-slim` variants are the others (see [Image variants](#image-variants)):
 
     ```bash
-    helm inspect values runatlantis/atlantis > values.yaml
+    docker build --target alpine -t registry.example.com/atlantis:my-tag .
+    docker push registry.example.com/atlantis:my-tag
     ```
 
-1. Edit `values.yaml` and add your access credentials and webhook secret
+1. Create a namespace and a Secret with your [access credentials](access-credentials.md) and [webhook secret](webhook-secrets.md). Its keys become environment variables of the Atlantis server, for example for GitHub:
+
+    ```bash
+    kubectl create namespace atlantis
+    kubectl -n atlantis create secret generic atlantis-vcs \
+      --from-literal=ATLANTIS_GH_USER=my-bot \
+      --from-literal=ATLANTIS_GH_TOKEN=... \
+      --from-literal=ATLANTIS_GH_WEBHOOK_SECRET=...
+    ```
+
+1. Create a `values.yaml` that sets the image, names the Secret, and sets your URL and [repo allowlist](server-configuration.md#repo-allowlist):
 
     ```yaml
-    # for example
-    github:
-      user: foo
-      token: bar
-      secret: baz
+    image:
+      repository: registry.example.com/atlantis
+      tag: my-tag
+    vcsSecretName: atlantis-vcs
+    atlantisUrl: https://atlantis.example.com
+    repoAllowlist: github.com/example-org/*
     ```
 
-1. Edit `values.yaml` and set your `orgAllowlist` (see [Repo Allowlist](server-configuration.md#repo-allowlist) for more information)
+    Every other value is described in the chart's [`values.yaml`](https://github.com/Kubelantis/katlantis/blob/master/deploy/helm/atlantis/values.yaml), for example `ingress`, `extraEnv` for other server flags, `repoConfig` for the [server-side repo config](server-side-repo-config.md), and `externalStores` for a shared plan store.
 
-    ```yaml
-    orgAllowlist: github.com/runatlantis/*
-    ```
+1. Install the chart:
 
-    **Note**: For helm chart version < `4.0.2`, `orgWhitelist` must be used instead.
-1. Configure any other variables (see [Atlantis Helm Chart: Customization](https://github.com/runatlantis/helm-charts#customization)
-    for documentation)
-1. Run
-
-    ```sh
-    helm install atlantis runatlantis/atlantis -f values.yaml
-    ```
-
-    If you are using helm v2, run:
-
-    ```sh
-    helm install -f values.yaml runatlantis/atlantis
+    ```bash
+    helm install atlantis deploy/helm/atlantis -n atlantis -f values.yaml
     ```
 
 Atlantis should be up and running in minutes! See [Next Steps](#next-steps) for
