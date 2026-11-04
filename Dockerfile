@@ -207,6 +207,9 @@ RUN ./download-release.sh \
 # target. Debian's own nodejs is older than cdktn supports.
 FROM deps AS cdktn-deps
 
+# Inherited from deps; repeated so linters see that the checksum pipe below
+# runs with pipefail.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG TARGETPLATFORM
 ARG NODE_VERSION
 ARG CDKTN_VERSION
