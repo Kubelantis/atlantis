@@ -357,7 +357,7 @@ COPY --from=tf-deps /usr/local/bin/tofu/tofu* /usr/local/bin/
 # target, which carries no bundled toolchains.
 ARG CDKTN_VERSION
 # renovate: datasource=apk depName=nodejs
-ENV NODEJS_VERSION="24.18.1-r0"
+ENV NODEJS_VERSION="24.22.1-r1"
 # renovate: datasource=apk depName=npm
 ENV NPM_VERSION="11.12.1-r0"
 USER root
