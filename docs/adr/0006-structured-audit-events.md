@@ -15,7 +15,8 @@ Atlantis applies infrastructure changes with privileged cloud credentials. Opera
 - **Webhooks** fire only for apply results and drift.
 - **Job logs** hold Terraform output, which can contain secrets, and they are deleted when the pull closes.
 - **The Kubernetes API audit log** records lock, `PullStatus` and lease writes as the Atlantis service account, never the end user.
-- **API and UI actions are anonymous.** The API uses one shared secret, and the UI at most one shared basic-auth user (issue #24).
+- **The HTTP access log (#41)** records each UI or API request that can change state at info level: method, path, source address, actor and HTTP status. It also logs failed and unparsable web logins at warn. It redacts query values other than a lock `id`, and #40 redacts credentials in URLs. These are free-text application log lines, filtered by `--log-level`. They record that a request arrived and its HTTP status, not the action's outcome. A UI lock delete shows the lock `id` and `HTTP 200`, but not whether the discard was recorded or which pull request the plan belonged to.
+- **API and UI actors are shared identities.** The access log names them `api`, the shared web user or `anonymous`. The API uses one shared secret, and the UI at most one shared basic-auth user (issue #24).
 
 Clusters already collect container stdout. A format that log pipelines can filter, and that is emitted whatever the log level, reaches a SIEM without new infrastructure.
 
@@ -26,7 +27,8 @@ Atlantis will emit one **audit event** per auditable action, as a single JSON li
 **Actions.** The events cover:
 - plan, apply, policy check, `approve_policies`, unlock, import and state rm, from comments, autoplan and the API;
 - lock delete and global apply-lock enable and disable, from the UI and the API;
-- API plan, apply and drift runs.
+- API plan, apply and drift runs;
+- failed web logins (`login`, outcome `refused`), with the username tried and the source address, never the password.
 
 An action emits one event when it finishes. That includes refusals (apply requirements, the global apply lock, the pull lock, a discarded plan), which are often what an investigation needs.
 
@@ -70,6 +72,12 @@ An action emits one event when it finishes. That includes refusals (apply requir
 
 Fields are only added within a version. Removing or renaming one bumps `audit_version`.
 
+**Relation to the access log (#41).** Both stay, at different layers:
+- **The access log** records HTTP requests, including those refused before they reach an action (failed logins, a missing API token). It stays application logging, under `--log-level`.
+- **Audit events** record actions and how they ended, and are not filtered by `--log-level`.
+- **UI and API actions** produce both, joined by `trace_id`. The audit event is the record of what happened. The access line shows the request that caused it.
+- **Failed logins** are logged in both, so a SIEM that reads only audit events still sees them.
+
 The same fields are added to the per-command application log context (actor, `vcs_host`, `command`), so ordinary log lines can be joined with audit events.
 
 **Alternatives considered:**
@@ -89,6 +97,6 @@ The same fields are added to the per-command application log context (actor, `vc
 - **Kubernetes API audit:** it continues to show only the service account. The docs will say that the audit events are the source of user identity, correlated through `trace_id`.
 - **Follow-ups:**
   - #24: caller identity for the API and UI;
-  - #25: secrets in logs;
-  - #26: UI and API access logging at the default level;
   - an optional webhook or OTLP sink for audit events.
+
+  Done since this ADR was proposed: #25 (secrets in logs, by #40) and #26 (UI and API access logging at the default level, by #41). The access log complements audit events, as described above.
