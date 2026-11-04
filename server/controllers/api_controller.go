@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,14 +31,13 @@ import (
 	"github.com/runatlantis/atlantis/server/events/vcs"
 	"github.com/runatlantis/atlantis/server/events/webhooks"
 	"github.com/runatlantis/atlantis/server/logging"
+	"github.com/runatlantis/atlantis/server/utils"
 	tally "github.com/uber-go/tally/v4"
 )
 
 const atlantisTokenHeader = "X-Atlantis-Token"
 
 var nonPRPullCounter atomic.Int64
-
-var apiErrorURLCredentialRE = regexp.MustCompile(`(?i)(https?://)([^\s/@]+:)?[^\s/@]+@`)
 
 type APIController struct {
 	APISecret                       []byte
@@ -269,7 +267,7 @@ func sanitizeAPIErrorString(ctx *command.Context, message string) string {
 		message = sanitizeRepoCloneURL(message, ctx.HeadRepo)
 		message = sanitizeRepoCloneURL(message, ctx.Pull.BaseRepo)
 	}
-	return apiErrorURLCredentialRE.ReplaceAllString(message, "$1<redacted>@")
+	return utils.RedactURLCredentials(message)
 }
 
 func sanitizeRepoCloneURL(message string, repo models.Repo) string {
@@ -522,7 +520,7 @@ func (a *APIController) apiSetup(ctx *command.Context, cmdName command.Name) (er
 	baseRepo := ctx.Pull.BaseRepo
 	headRepo := ctx.HeadRepo
 
-	unlockFn, err := a.WorkingDirLocker.TryLock(baseRepo.FullName, pull.Num, events.DefaultWorkspace, events.DefaultRepoRelDir, "", cmdName, events.WorkingDirLockMetadataForPull(pull))
+	unlockFn, err := a.WorkingDirLocker.TryLock(baseRepo, pull.Num, events.DefaultWorkspace, events.DefaultRepoRelDir, "", cmdName, events.WorkingDirLockMetadataForPull(pull))
 	if err != nil {
 		return err
 	}

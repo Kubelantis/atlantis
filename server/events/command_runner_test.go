@@ -782,7 +782,7 @@ func TestRunApply_DoesNotReturnZeroProjectsWhilePlanInFlight(t *testing.T) {
 		tc.SilenceNoProjects = true
 		tc.workingDirLocker = locker
 	})
-	unlock, err := locker.TryLockPull(testdata.GithubRepo.FullName, testdata.Pull.Num, command.Plan, events.WorkingDirLockMetadata{})
+	unlock, err := locker.TryLockPull(testdata.GithubRepo, testdata.Pull.Num, command.Plan, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 	defer unlock()
 
@@ -824,17 +824,17 @@ func TestPlanCommandRunner_HoldsPlanInFlightLockAcrossCleanupPlanAndDBWrite(t *t
 	When(githubGetter.GetPullRequest(Any[logging.SimpleLogging](), Eq(testdata.GithubRepo), Eq(testdata.Pull.Num))).ThenReturn(pull, nil)
 	When(eventParsing.ParseGithubPull(Any[logging.SimpleLogging](), Eq(pull))).ThenReturn(modelPull, modelPull.BaseRepo, testdata.GithubRepo, nil)
 	When(projectCommandBuilder.BuildPlanCommands(Any[*command.Context](), Eq(cmd))).Then(func(args []Param) ReturnValues {
-		Assert(t, locker.HasCommandLock(testdata.GithubRepo.FullName, testdata.Pull.Num, command.Plan), "expected plan lock during command build")
+		Assert(t, locker.HasCommandLock(testdata.GithubRepo, testdata.Pull.Num, command.Plan), "expected plan lock during command build")
 		return ReturnValues{[]command.ProjectContext{projectCtx}, nil}
 	})
 	When(projectCommandRunner.Plan(projectCtx)).Then(func(args []Param) ReturnValues {
-		Assert(t, locker.HasCommandLock(testdata.GithubRepo.FullName, testdata.Pull.Num, command.Plan), "expected plan lock during project plan")
+		Assert(t, locker.HasCommandLock(testdata.GithubRepo, testdata.Pull.Num, command.Plan), "expected plan lock during project plan")
 		return ReturnValues{command.ProjectCommandOutput{PlanSuccess: &models.PlanSuccess{}}}
 	})
 
 	ch.RunCommentCommand(testdata.GithubRepo, nil, nil, testdata.User, testdata.Pull.Num, cmd)
 
-	Assert(t, !locker.HasCommandLock(testdata.GithubRepo.FullName, testdata.Pull.Num, command.Plan), "expected plan lock to be released")
+	Assert(t, !locker.HasCommandLock(testdata.GithubRepo, testdata.Pull.Num, command.Plan), "expected plan lock to be released")
 }
 
 func TestPlanCommandRunner_HoldsPlanLockDuringStalePlanCleanup(t *testing.T) {
@@ -859,7 +859,7 @@ func TestPlanCommandRunner_HoldsPlanLockDuringStalePlanCleanup(t *testing.T) {
 	When(projectCommandBuilder.BuildPlanCommands(Any[*command.Context](), Eq(cmd))).ThenReturn([]command.ProjectContext{projectCtx}, nil)
 	When(workingDir.GetPullDir(Any[models.Repo](), Any[models.PullRequest]())).ThenReturn(tmp, nil)
 	When(pendingPlanFinder.Find(tmp)).Then(func([]Param) ReturnValues {
-		Assert(t, locker.HasCommandLock(testdata.GithubRepo.FullName, testdata.Pull.Num, command.Plan), "expected plan lock during stale plan cleanup")
+		Assert(t, locker.HasCommandLock(testdata.GithubRepo, testdata.Pull.Num, command.Plan), "expected plan lock during stale plan cleanup")
 		return ReturnValues{[]events.PendingPlan{}, nil}
 	})
 	When(projectCommandRunner.Plan(projectCtx)).ThenReturn(command.ProjectCommandOutput{PlanSuccess: &models.PlanSuccess{}})
@@ -874,12 +874,12 @@ func TestPlanCommandRunner_HoldsPlanLockDuringPullStatusWrite(t *testing.T) {
 	realDB := newTestDB(t)
 	writeObserved := false
 	database := assertPlanLockDB{
-		Database:     realDB,
-		t:            t,
-		locker:       locker,
-		repoFullName: testdata.GithubRepo.FullName,
-		pullNum:      testdata.Pull.Num,
-		called:       &writeObserved,
+		Database: realDB,
+		t:        t,
+		locker:   locker,
+		repo:     testdata.GithubRepo,
+		pullNum:  testdata.Pull.Num,
+		called:   &writeObserved,
 	}
 	setup(t, func(tc *TestConfig) {
 		tc.database = database
@@ -927,7 +927,7 @@ func TestPlanCommandRunner_AutoplanHoldsPlanLockDuringStalePlanCleanup(t *testin
 	When(projectCommandBuilder.BuildAutoplanCommands(Any[*command.Context]())).ThenReturn([]command.ProjectContext{projectCtx}, nil)
 	When(workingDir.GetPullDir(Any[models.Repo](), Any[models.PullRequest]())).ThenReturn(tmp, nil)
 	When(pendingPlanFinder.Find(tmp)).Then(func([]Param) ReturnValues {
-		Assert(t, locker.HasCommandLock(testdata.GithubRepo.FullName, testdata.Pull.Num, command.Plan), "expected autoplan lock during stale plan cleanup")
+		Assert(t, locker.HasCommandLock(testdata.GithubRepo, testdata.Pull.Num, command.Plan), "expected autoplan lock during stale plan cleanup")
 		return ReturnValues{[]events.PendingPlan{}, nil}
 	})
 	When(projectCommandRunner.Plan(projectCtx)).ThenReturn(command.ProjectCommandOutput{PlanSuccess: &models.PlanSuccess{}})
@@ -942,12 +942,12 @@ func TestPlanCommandRunner_AutoplanHoldsPlanLockDuringPullStatusWrite(t *testing
 	realDB := newTestDB(t)
 	writeObserved := false
 	database := assertPlanLockDB{
-		Database:     realDB,
-		t:            t,
-		locker:       locker,
-		repoFullName: testdata.GithubRepo.FullName,
-		pullNum:      testdata.Pull.Num,
-		called:       &writeObserved,
+		Database: realDB,
+		t:        t,
+		locker:   locker,
+		repo:     testdata.GithubRepo,
+		pullNum:  testdata.Pull.Num,
+		called:   &writeObserved,
 	}
 	setup(t, func(tc *TestConfig) {
 		tc.database = database
@@ -1824,16 +1824,16 @@ func plannedProjectResult(repoRelDir, workspace, projectName string) command.Pro
 
 type assertPlanLockDB struct {
 	db.Database
-	t            *testing.T
-	locker       events.WorkingDirLocker
-	repoFullName string
-	pullNum      int
-	called       *bool
+	t       *testing.T
+	locker  events.WorkingDirLocker
+	repo    models.Repo
+	pullNum int
+	called  *bool
 }
 
 func (a assertPlanLockDB) UpdatePullWithResults(pull models.PullRequest, results []command.ProjectResult) (models.PullStatus, error) {
 	*a.called = true
-	Assert(a.t, a.locker.HasCommandLock(a.repoFullName, a.pullNum, command.Plan), "expected plan lock during pull status write")
+	Assert(a.t, a.locker.HasCommandLock(a.repo, a.pullNum, command.Plan), "expected plan lock during pull status write")
 	return a.Database.UpdatePullWithResults(pull, results)
 }
 
@@ -1870,6 +1870,10 @@ func (l failUnlockByPullLocker) UnlockByPull(models.Repo, int) ([]models.Project
 }
 
 func (l failUnlockByPullLocker) UnlockIfOwnedByPull(models.Project, string, models.PullRequest) (*models.ProjectLock, error) {
+	return nil, nil
+}
+
+func (l failUnlockByPullLocker) UnlockExact(models.ProjectLock) (*models.ProjectLock, error) {
 	return nil, nil
 }
 
@@ -2107,7 +2111,7 @@ func TestRunUnlockCommandFail_VCSComment(t *testing.T) {
 		&events.CommentCommand{Name: command.Unlock})
 
 	vcsClient.VerifyWasCalledOnce().CreateComment(
-		Any[logging.SimpleLogging](), Eq(testdata.GithubRepo), Eq(testdata.Pull.Num), Eq("Failed to delete PR locks"), Eq("unlock"))
+		Any[logging.SimpleLogging](), Eq(testdata.GithubRepo), Eq(testdata.Pull.Num), Eq("Failed to delete PR locks: err"), Eq("unlock"))
 }
 
 func TestRunUnlockCommandFail_DisableUnlockLabel(t *testing.T) {

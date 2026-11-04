@@ -361,6 +361,7 @@ func TestCleanUpPullWithCorrectJobContext(t *testing.T) {
 		PullNum:      testdata.Pull.Num,
 		Repo:         testdata.Pull.BaseRepo.Name,
 		RepoFullName: testdata.Pull.BaseRepo.FullName,
+		VCSHostname:  testdata.Pull.BaseRepo.VCSHost.Hostname,
 		ProjectName:  "project1",
 		Path:         "path/to/project1",
 		Workspace:    "default",
@@ -372,6 +373,7 @@ func TestCleanUpPullWithCorrectJobContext(t *testing.T) {
 		PullNum:      testdata.Pull.Num,
 		Repo:         testdata.Pull.BaseRepo.Name,
 		RepoFullName: testdata.Pull.BaseRepo.FullName,
+		VCSHostname:  testdata.Pull.BaseRepo.VCSHost.Hostname,
 		ProjectName:  "project2",
 		Path:         "path/to/project2",
 		Workspace:    "staging",
@@ -383,6 +385,7 @@ func TestCleanUpPullWithCorrectJobContext(t *testing.T) {
 		PullNum:      testdata.Pull.Num,
 		Repo:         testdata.Pull.BaseRepo.Name,
 		RepoFullName: testdata.Pull.BaseRepo.FullName,
+		VCSHostname:  testdata.Pull.BaseRepo.VCSHost.Hostname,
 	}, capturedArgs[2])
 }
 

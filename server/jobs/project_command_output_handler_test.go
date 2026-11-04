@@ -424,3 +424,48 @@ func TestHighConcurrencyStress(t *testing.T) {
 	wg.Wait()
 	close(prjCmdOutputChan)
 }
+
+// Job output is shown on the job page and persisted; credentials in URLs are
+// redacted from it as from comments and logs.
+func TestSendRedactsURLCredentials(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	prjCmdOutputChan := make(chan *jobs.ProjectCmdOutputLine, 1)
+	handler := jobs.NewAsyncProjectCommandOutputHandler(prjCmdOutputChan, logger, logstore.NoopLogStore{})
+	ctx := createTestProjectCmdContext(t)
+
+	handler.Send(ctx, "Error: git::https://user:s3cret@github.com/org/mod.git", false)
+
+	Equals(t, "Error: git::https://<redacted>@github.com/org/mod.git", (<-prjCmdOutputChan).Line)
+}
+
+// Closing a pull drops its jobs only: a pull with the same number of a
+// same-named repo on another VCS host keeps its output.
+func TestCleanUpPullJobsKeepsSameNamedPullOnOtherHost(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	prjCmdOutputChan := make(chan *jobs.ProjectCmdOutputLine)
+	handler := jobs.NewAsyncProjectCommandOutputHandler(prjCmdOutputChan, logger, logstore.NoopLogStore{})
+	go handler.Handle()
+
+	github := createTestProjectCmdContext(t)
+	github.BaseRepo.FullName = "test-org/test-repo"
+	github.BaseRepo.VCSHost.Hostname = "github.com"
+	github.JobID = "github-job"
+	gitlab := github
+	gitlab.BaseRepo.VCSHost.Hostname = "gitlab.com"
+	gitlab.JobID = "gitlab-job"
+	handler.Send(github, "plan output", false)
+	handler.Send(gitlab, "plan output", false)
+	deadline := time.Now().Add(5 * time.Second)
+	for len(handler.GetPullToJobMapping()) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("jobs were not recorded")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	handler.(interface{ CleanUpPullJobs(models.Repo, int) }).CleanUpPullJobs(github.BaseRepo, github.Pull.Num)
+
+	left := handler.GetPullToJobMapping()
+	Equals(t, 1, len(left))
+	Equals(t, "gitlab.com", left[0].Pull.VCSHostname)
+}

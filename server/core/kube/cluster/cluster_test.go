@@ -81,6 +81,37 @@ func TestMembershipOwnershipAndDrain(t *testing.T) {
 	eventually(t, 2*time.Second, func() bool { return len(a.Members()) == 1 }, "stopped member still listed")
 }
 
+// Replicas on earlier versions read a member's name from holderIdentity
+// alone. During a rolling upgrade they must see an upgraded member under its
+// replica name, the name PullStatus.PlannedBy and rendezvous ownership use.
+func TestMemberLeaseIsReadableByEarlierVersions(t *testing.T) {
+	c, ns := kubetest.Client(t)
+	m, _ := start(t, c, ns, "atlantis-0")
+	eventually(t, 5*time.Second, func() bool { return len(m.Members()) == 1 }, "replica did not join")
+
+	var leases coordinationv1.LeaseList
+	Ok(t, c.List(context.Background(), &leases, client.InNamespace(ns), client.MatchingLabels{kube.LabelType: kube.TypeMember}))
+	Equals(t, 1, len(leases.Items))
+	Equals(t, "atlantis-0", cluster.Holder(&leases.Items[0]))
+}
+
+// A second process with a name already in use is not a member and reports
+// the conflict; it becomes the member once the first one leaves.
+func TestMembershipDetectsDuplicateIdentity(t *testing.T) {
+	c, ns := kubetest.Client(t)
+	first, stopFirst := start(t, c, ns, "atlantis-0")
+	eventually(t, 5*time.Second, func() bool { return len(first.Members()) == 1 }, "first replica did not join")
+
+	second, _ := start(t, c, ns, "atlantis-0")
+	eventually(t, 5*time.Second, second.IdentityConflict, "second process did not report the duplicate identity")
+	Assert(t, !first.IdentityConflict(), "the holder must not report a conflict")
+	Equals(t, 1, len(first.Members()))
+
+	stopFirst() // releases the member lease
+	eventually(t, 5*time.Second, func() bool { return !second.IdentityConflict() }, "second process did not take over after the first left")
+	Equals(t, "http://atlantis-0:4142", second.Members()[0].Address)
+}
+
 func TestRendezvousOnlyMovesDepartedMembersKeys(t *testing.T) {
 	c, ns := kubetest.Client(t)
 	ms := []*cluster.Membership{}

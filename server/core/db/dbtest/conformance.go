@@ -203,6 +203,29 @@ func Run(t *testing.T, newDB Factory) {
 		Equals(t, 2, locks[0].Pull.Num)
 	})
 
+	t.Run("unlock exact releases only the same acquisition", func(t *testing.T) {
+		d := newDB(t)
+		lock := newLock(1, project, workspace)
+		_, _, err := d.TryLock(lock)
+		Ok(t, err)
+
+		later := lock
+		later.Time = lock.Time.Add(time.Second)
+		l, err := d.UnlockExact(later)
+		Ok(t, err)
+		Assert(t, l == nil, "released a lock acquired at another time")
+		l, err = d.UnlockExact(newLock(2, project, workspace))
+		Ok(t, err)
+		Assert(t, l == nil, "released another pull's lock")
+
+		l, err = d.UnlockExact(lock)
+		Ok(t, err)
+		Assert(t, l != nil, "did not release the same acquisition")
+		l, err = d.GetLock(project, workspace)
+		Ok(t, err)
+		Assert(t, l == nil, "lock must be gone")
+	})
+
 	// One server can serve two VCS providers that both have owner/repo, so
 	// a pull is identified by host as well as repo name and number.
 	t.Run("unlocking ignores the same pull number on another host", func(t *testing.T) {

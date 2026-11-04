@@ -22,6 +22,12 @@ spec:
           labels: {severity: warning}
           annotations:
             summary: Fewer Atlantis replicas are live members than configured.
+        - alert: AtlantisDuplicateIdentity
+          expr: max(atlantis_cluster_identity_conflict{namespace="{{ .Release.Namespace }}"}) > 0
+          for: 2m
+          labels: {severity: critical}
+          annotations:
+            summary: Two Atlantis processes are running with the same replica identity; one stays not ready. Check for a force-deleted pod still running or a shared --kubernetes-identity.
         - alert: AtlantisForwardingErrors
           expr: sum(rate(atlantis_cluster_routing_forward_error{namespace="{{ .Release.Namespace }}"}[10m])) > 0
           for: 10m

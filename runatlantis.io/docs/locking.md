@@ -62,7 +62,9 @@ to delete the lock.
 
 Once a plan is discarded, you'll need to run `plan` again prior to running `apply` when you go back to that pull request.
 
-**Discard Plan and Unlock** records the discard before it deletes the lock, so every replica refuses to apply that plan. If Atlantis cannot record it, for example because the Kubernetes API is unreachable, the lock is kept and the page shows an error; try again once the API is reachable.
+**Discard Plan and Unlock** and `atlantis unlock` record the discard before they delete any lock, so every replica refuses to apply those plans. If Atlantis cannot record it, for example because the Kubernetes API is unreachable, no lock is deleted and you see an error; try again once the API is reachable.
+
+`atlantis unlock` doesn't run while another command of the pull request is running, including `atlantis import` and `atlantis state rm`, and commands of that pull request don't start while it runs. Otherwise a running command could lose its lock to another pull request. Atlantis comments that the pull request is locked; run the command again once the other one finishes.
 
 ## Relationship to Terraform State Locking
 

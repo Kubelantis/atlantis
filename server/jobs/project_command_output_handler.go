@@ -11,6 +11,7 @@ import (
 	"github.com/runatlantis/atlantis/server/events/command"
 	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/runatlantis/atlantis/server/logging"
+	"github.com/runatlantis/atlantis/server/utils"
 )
 
 type OutputBuffer struct {
@@ -22,9 +23,11 @@ type PullInfo struct {
 	PullNum      int
 	Repo         string
 	RepoFullName string
-	ProjectName  string
-	Path         string
-	Workspace    string
+	// VCSHostname tells apart pulls of same-named repos on two VCS providers.
+	VCSHostname string
+	ProjectName string
+	Path        string
+	Workspace   string
 }
 
 type JobIDInfo struct {
@@ -156,6 +159,8 @@ func (p *AsyncProjectCommandOutputHandler) IsKeyExists(key string) bool {
 	return persisted
 }
 
+// Send streams a line of a job's output. Credentials in URLs are redacted, as
+// in comments and logs: the line is shown on the job page and persisted.
 func (p *AsyncProjectCommandOutputHandler) Send(ctx command.ProjectContext, msg string, operationComplete bool) {
 	p.projectCmdOutput <- &ProjectCmdOutputLine{
 		JobID: ctx.JobID,
@@ -165,13 +170,14 @@ func (p *AsyncProjectCommandOutputHandler) Send(ctx command.ProjectContext, msg 
 				PullNum:      ctx.Pull.Num,
 				Repo:         ctx.BaseRepo.Name,
 				RepoFullName: ctx.BaseRepo.FullName,
+				VCSHostname:  ctx.BaseRepo.VCSHost.Hostname,
 				ProjectName:  ctx.ProjectName,
 				Path:         ctx.RepoRelDir,
 				Workspace:    ctx.Workspace,
 			},
 			JobStep: ctx.CommandName.String(),
 		},
-		Line:              msg,
+		Line:              utils.RedactURLCredentials(msg),
 		OperationComplete: operationComplete,
 	}
 }
@@ -185,11 +191,12 @@ func (p *AsyncProjectCommandOutputHandler) SendWorkflowHook(ctx models.WorkflowH
 				PullNum:      ctx.Pull.Num,
 				Repo:         ctx.BaseRepo.Name,
 				RepoFullName: ctx.BaseRepo.FullName,
+				VCSHostname:  ctx.BaseRepo.VCSHost.Hostname,
 			},
 			JobDescription: ctx.HookDescription,
 			JobStep:        ctx.HookStepName,
 		},
-		Line:              msg,
+		Line:              utils.RedactURLCredentials(msg),
 		OperationComplete: operationComplete,
 	}
 }
@@ -402,13 +409,15 @@ func (p *AsyncProjectCommandOutputHandler) CleanUp(pullInfo PullInfo) {
 // CleanUpPullJobs drops the output of every job of a pull request, in
 // memory and persisted, whatever project or workflow hook it belongs to. It
 // needs no project list, so a replica can clean up a pull it only partly ran.
-func (p *AsyncProjectCommandOutputHandler) CleanUpPullJobs(repoFullName string, pullNum int) {
-	if err := p.logStore.DeletePull(logstore.Pull{RepoFullName: repoFullName, Num: pullNum}); err != nil {
-		p.logger.Warn("deleting persisted job logs for %s#%d: %s", repoFullName, pullNum, err)
+func (p *AsyncProjectCommandOutputHandler) CleanUpPullJobs(repo models.Repo, pullNum int) {
+	// Persisted logs are laid out by repo full name only, without the VCS
+	// host (see #18).
+	if err := p.logStore.DeletePull(logstore.Pull{RepoFullName: repo.FullName, Num: pullNum}); err != nil {
+		p.logger.Warn("deleting persisted job logs for %s#%d: %s", repo.FullName, pullNum, err)
 	}
 	p.pullToJobMapping.Range(func(key, value any) bool {
 		info := key.(PullInfo)
-		if info.RepoFullName != repoFullName || info.PullNum != pullNum {
+		if info.RepoFullName != repo.FullName || info.VCSHostname != repo.VCSHost.Hostname || info.PullNum != pullNum {
 			return true
 		}
 		value.(*sync.Map).Range(func(k, _ any) bool {
@@ -443,7 +452,7 @@ func (p *NoopProjectOutputHandler) Handle() {
 }
 
 // CleanUpPullJobs does nothing.
-func (p *NoopProjectOutputHandler) CleanUpPullJobs(string, int) {}
+func (p *NoopProjectOutputHandler) CleanUpPullJobs(models.Repo, int) {}
 
 func (p *NoopProjectOutputHandler) CleanUp(_ PullInfo) {
 }

@@ -5,11 +5,15 @@ package events_test
 
 import (
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	. "github.com/petergtz/pegomock/v4"
+	"github.com/runatlantis/atlantis/server/core/db"
 	"github.com/runatlantis/atlantis/server/core/kube/kubedb/kubedbtest"
 	lockmocks "github.com/runatlantis/atlantis/server/core/locking/mocks"
+	"github.com/runatlantis/atlantis/server/core/planstore"
 	"github.com/runatlantis/atlantis/server/events"
 	"github.com/runatlantis/atlantis/server/events/command"
 	"github.com/runatlantis/atlantis/server/events/models"
@@ -61,8 +65,8 @@ func TestDeleteLock_Success(t *testing.T) {
 			RepoFullName: pull.BaseRepo.FullName,
 		},
 	}
-	l.EXPECT().GetLock("id").Return(lock, nil)
-	l.EXPECT().UnlockIfOwnedByPull(lock.Project, workspace, pull).Return(lock, nil)
+	l.EXPECT().GetLock("id").Return(lock, nil).Times(2) // read again once the pull is locked
+	l.EXPECT().UnlockExact(*lock).Return(lock, nil)
 	workingDir := events.NewMockWorkingDir()
 	workingDirLocker := events.NewDefaultWorkingDirLocker()
 	db := kubedbtest.New(t)
@@ -109,7 +113,7 @@ func TestDeleteLock_RecordsDiscardBeforeUnlocking(t *testing.T) {
 	lock := &models.ProjectLock{Pull: pull, Workspace: "default", Project: models.Project{Path: "dir1", RepoFullName: "owner/repo"}}
 
 	l.EXPECT().GetLock("id").Return(lock, nil)
-	l.EXPECT().UnlockIfOwnedByPull(lock.Project, "default", pull).DoAndReturn(func(models.Project, string, models.PullRequest) (*models.ProjectLock, error) {
+	l.EXPECT().UnlockExact(*lock).DoAndReturn(func(models.ProjectLock) (*models.ProjectLock, error) {
 		status, err := db.GetPullStatus(pull)
 		Ok(t, err)
 		Equals(t, models.DiscardedPlanStatus, status.Projects[0].Status)
@@ -156,12 +160,23 @@ func TestDeleteLock_NoPlanStatus(t *testing.T) {
 	pull := models.PullRequest{BaseRepo: models.Repo{FullName: "owner/repo", VCSHost: models.VCSHost{Hostname: "github.com"}}, Num: 2}
 	lock := &models.ProjectLock{Pull: pull, Workspace: "default", Project: models.Project{Path: "dir1", RepoFullName: "owner/repo"}}
 	l.EXPECT().GetLock("id").Return(lock, nil)
-	l.EXPECT().UnlockIfOwnedByPull(lock.Project, "default", pull).Return(lock, nil)
+	l.EXPECT().UnlockExact(*lock).Return(lock, nil)
 	dlc := events.DefaultDeleteLockCommand{Locker: l, WorkingDir: workingDir, Database: db}
 
 	got, err := dlc.DeleteLock(logger, "id")
 	Ok(t, err)
 	Equals(t, lock, got)
+}
+
+// expectPullLocks makes l report locks as the pull's locks and expect each to
+// be released with UnlockExact.
+func expectPullLocks(l *lockmocks.MockLocker, locks ...models.ProjectLock) {
+	all := map[string]models.ProjectLock{}
+	for _, lock := range locks {
+		all[models.GenerateLockKey(lock.Project, lock.Workspace)] = lock
+		l.EXPECT().UnlockExact(lock).Return(&lock, nil)
+	}
+	l.EXPECT().List().Return(all, nil)
 }
 
 func TestDeleteLocksByPull_LockerErr(t *testing.T) {
@@ -173,7 +188,7 @@ func TestDeleteLocksByPull_LockerErr(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	l := lockmocks.NewMockLocker(ctrl)
 	workingDir := events.NewMockWorkingDir()
-	l.EXPECT().UnlockByPull(models.Repo{FullName: repoName}, pullNum).Return(nil, errors.New("err"))
+	l.EXPECT().List().Return(nil, errors.New("err"))
 	dlc := events.DefaultDeleteLockCommand{
 		Locker:     l,
 		WorkingDir: workingDir,
@@ -193,7 +208,7 @@ func TestDeleteLocksByPull_None(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	l := lockmocks.NewMockLocker(ctrl)
 	workingDir := events.NewMockWorkingDir()
-	l.EXPECT().UnlockByPull(models.Repo{FullName: repoName}, pullNum).Return([]models.ProjectLock{}, nil)
+	expectPullLocks(l)
 	dlc := events.DefaultDeleteLockCommand{
 		Locker:     l,
 		WorkingDir: workingDir,
@@ -221,7 +236,7 @@ func TestDeleteLocksByPull_SingleSuccess(t *testing.T) {
 		BaseRepo: models.Repo{FullName: repoName},
 		Num:      pullNum,
 	}
-	l.EXPECT().UnlockByPull(models.Repo{FullName: repoName}, pullNum).Return([]models.ProjectLock{
+	expectPullLocks(l, []models.ProjectLock{
 		{
 			Pull:      pull,
 			Workspace: workspace,
@@ -231,8 +246,7 @@ func TestDeleteLocksByPull_SingleSuccess(t *testing.T) {
 				ProjectName:  projectName,
 			},
 		},
-	}, nil,
-	)
+	}...)
 	dlc := events.DefaultDeleteLockCommand{
 		Locker:     l,
 		WorkingDir: workingDir,
@@ -261,7 +275,7 @@ func TestDeleteLocksByPull_MultipleSuccess(t *testing.T) {
 		BaseRepo: models.Repo{FullName: repoName},
 		Num:      pullNum,
 	}
-	l.EXPECT().UnlockByPull(models.Repo{FullName: repoName}, pullNum).Return([]models.ProjectLock{
+	expectPullLocks(l, []models.ProjectLock{
 		{
 			Pull:      pull,
 			Workspace: workspace,
@@ -278,8 +292,7 @@ func TestDeleteLocksByPull_MultipleSuccess(t *testing.T) {
 				RepoFullName: pull.BaseRepo.FullName,
 			},
 		},
-	}, nil,
-	)
+	}...)
 	dlc := events.DefaultDeleteLockCommand{
 		Locker:     l,
 		WorkingDir: workingDir,
@@ -314,11 +327,11 @@ func TestDeleteLocksByPull_MarksPlansDiscarded(t *testing.T) {
 	}})
 	Ok(t, err)
 
-	l.EXPECT().UnlockByPull(pull.BaseRepo, 2).Return([]models.ProjectLock{{
+	expectPullLocks(l, []models.ProjectLock{{
 		Pull:      pull,
 		Workspace: "default",
 		Project:   models.Project{Path: "dir1", RepoFullName: "owner/repo"},
-	}}, nil)
+	}}...)
 	dlc := events.DefaultDeleteLockCommand{Locker: l, WorkingDir: workingDir, Database: db}
 
 	n, err := dlc.DeleteLocksByPull(logger, pull.BaseRepo, 2)
@@ -357,11 +370,11 @@ func TestDeleteLocksByPull_DiscardsTheNamedProject(t *testing.T) {
 	_, err := db.UpdatePullWithResults(pull, []command.ProjectResult{plan("a"), plan("b")})
 	Ok(t, err)
 
-	l.EXPECT().UnlockByPull(pull.BaseRepo, 2).Return([]models.ProjectLock{
+	expectPullLocks(l, []models.ProjectLock{
 		{Pull: pull, Workspace: "default", Project: models.Project{Path: "dir1", RepoFullName: "owner/repo", ProjectName: "b"}},
 		// No status was recorded for this one: it is skipped, not an error.
 		{Pull: pull, Workspace: "default", Project: models.Project{Path: "dir2", RepoFullName: "owner/repo"}},
-	}, nil)
+	}...)
 	dlc := events.DefaultDeleteLockCommand{Locker: l, WorkingDir: workingDir, Database: db}
 
 	n, err := dlc.DeleteLocksByPull(logger, pull.BaseRepo, 2)
@@ -374,4 +387,229 @@ func TestDeleteLocksByPull_DiscardsTheNamedProject(t *testing.T) {
 		got[p.ProjectName] = p.Status
 	}
 	Equals(t, map[string]models.ProjectPlanStatus{"a": models.PlannedPlanStatus, "b": models.DiscardedPlanStatus}, got)
+}
+
+func unlockTestPull() models.PullRequest {
+	return models.PullRequest{
+		BaseRepo:   models.Repo{FullName: "owner/repo", Owner: "owner", Name: "repo", VCSHost: models.VCSHost{Hostname: "github.com"}},
+		Num:        2,
+		HeadCommit: "abc",
+	}
+}
+
+func recordPlan(t *testing.T, d db.Database, pull models.PullRequest, dir string) models.ProjectLock {
+	t.Helper()
+	_, err := d.UpdatePullWithResults(pull, []command.ProjectResult{{
+		Command: command.Plan, RepoRelDir: dir, Workspace: "default",
+		ProjectCommandOutput: command.ProjectCommandOutput{PlanSuccess: &models.PlanSuccess{TerraformOutput: "Plan: 1 to add"}},
+	}})
+	Ok(t, err)
+	return models.ProjectLock{Pull: pull, Workspace: "default", Project: models.Project{Path: dir, RepoFullName: pull.BaseRepo.FullName}}
+}
+
+// Every discard is recorded before the first lock is released, so a plan
+// left on another replica or in a plan store is never applicable once its
+// lock is free.
+func TestDeleteLocksByPull_RecordsDiscardsBeforeUnlocking(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	RegisterMockTestingT(t)
+	ctrl := gomock.NewController(t)
+	l := lockmocks.NewMockLocker(ctrl)
+	d := kubedbtest.New(t)
+	t.Cleanup(func() { d.Close() })
+	pull := unlockTestPull()
+	lock1, lock2 := recordPlan(t, d, pull, "dir1"), recordPlan(t, d, pull, "dir2")
+
+	l.EXPECT().List().Return(map[string]models.ProjectLock{"a": lock1, "b": lock2}, nil)
+	l.EXPECT().UnlockExact(gomock.Any()).Times(2).DoAndReturn(func(lock models.ProjectLock) (*models.ProjectLock, error) {
+		status, err := d.GetPullStatus(pull)
+		Ok(t, err)
+		for _, proj := range status.Projects {
+			Equals(t, models.DiscardedPlanStatus, proj.Status)
+		}
+		return &lock, nil
+	})
+	dlc := events.DefaultDeleteLockCommand{Locker: l, WorkingDir: events.NewMockWorkingDir(), Database: d}
+
+	n, err := dlc.DeleteLocksByPull(logger, pull.BaseRepo, pull.Num)
+	Ok(t, err)
+	Equals(t, 2, n)
+}
+
+// If a discard cannot be recorded no lock is released and no plan deleted:
+// releasing them would leave plans applicable that the user asked to discard.
+func TestDeleteLocksByPull_KeepsLocksWhenDiscardFails(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	RegisterMockTestingT(t)
+	ctrl := gomock.NewController(t)
+	l := lockmocks.NewMockLocker(ctrl)
+	workingDir := events.NewMockWorkingDir()
+	d := kubedbtest.New(t)
+	d.Close() // every write fails
+	pull := unlockTestPull()
+	lock := models.ProjectLock{Pull: pull, Workspace: "default", Project: models.Project{Path: "dir1", RepoFullName: "owner/repo"}}
+
+	l.EXPECT().List().Return(map[string]models.ProjectLock{"a": lock}, nil)
+	dlc := events.DefaultDeleteLockCommand{Locker: l, WorkingDir: workingDir, Database: d}
+
+	n, err := dlc.DeleteLocksByPull(logger, pull.BaseRepo, pull.Num)
+	ErrContains(t, "no locks were released", err)
+	Equals(t, 0, n)
+	workingDir.VerifyWasCalled(Never()).DeletePlan(Any[logging.SimpleLogging](), Any[models.Repo](), Any[models.PullRequest](), Any[string](), Any[string](), Any[string]())
+}
+
+// Only this pull's locks are released: not another pull's, not the same
+// number on another VCS host, and not a lock the pull no longer holds.
+func TestDeleteLocksByPull_ReleasesOnlyThisPullsLocks(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	RegisterMockTestingT(t)
+	ctrl := gomock.NewController(t)
+	l := lockmocks.NewMockLocker(ctrl)
+	workingDir := events.NewMockWorkingDir()
+	pull := unlockTestPull()
+	otherHost := pull
+	otherHost.BaseRepo.VCSHost.Hostname = "gitlab.com"
+	otherPull := pull
+	otherPull.Num = 3
+	mine := models.ProjectLock{Pull: pull, Workspace: "default", Project: models.Project{Path: "dir1", RepoFullName: "owner/repo"}}
+	gone := models.ProjectLock{Pull: pull, Workspace: "default", Project: models.Project{Path: "dir2", RepoFullName: "owner/repo"}}
+
+	l.EXPECT().List().Return(map[string]models.ProjectLock{
+		"mine":  mine,
+		"gone":  gone,
+		"host":  {Pull: otherHost, Workspace: "default", Project: models.Project{Path: "dir3", RepoFullName: "owner/repo"}},
+		"other": {Pull: otherPull, Workspace: "default", Project: models.Project{Path: "dir4", RepoFullName: "owner/repo"}},
+	}, nil)
+	l.EXPECT().UnlockExact(mine).Return(&mine, nil)
+	// Released, or taken again, since it was listed.
+	l.EXPECT().UnlockExact(gone).Return(nil, nil)
+	dlc := events.DefaultDeleteLockCommand{Locker: l, WorkingDir: workingDir}
+
+	n, err := dlc.DeleteLocksByPull(logger, pull.BaseRepo, pull.Num)
+	Ok(t, err)
+	Equals(t, 1, n)
+	workingDir.VerifyWasCalled(Once()).DeletePlan(Any[logging.SimpleLogging](), Any[models.Repo](), Any[models.PullRequest](), Any[string](), Any[string](), Any[string]())
+}
+
+// A plan or apply of the pull could write a new plan, or take a lock again,
+// while the unlock runs; holding the pull's working-dir lock keeps them out.
+func TestDeleteLocksByPull_RefusesWhileACommandRuns(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	RegisterMockTestingT(t)
+	ctrl := gomock.NewController(t)
+	l := lockmocks.NewMockLocker(ctrl) // no calls expected
+	workingDirLocker := events.NewDefaultWorkingDirLocker()
+	pull := unlockTestPull()
+	release, err := workingDirLocker.TryLock(pull.BaseRepo, pull.Num, "default", "dir1", "", command.Plan, events.WorkingDirLockMetadata{})
+	Ok(t, err)
+	defer release()
+	dlc := events.DefaultDeleteLockCommand{Locker: l, WorkingDir: events.NewMockWorkingDir(), WorkingDirLocker: workingDirLocker}
+
+	n, err := dlc.DeleteLocksByPull(logger, pull.BaseRepo, pull.Num)
+	ErrContains(t, "currently locked", err)
+	Equals(t, 0, n)
+}
+
+// recordingPlanStore records plan store deletions.
+type recordingPlanStore struct {
+	planstore.PlanStore
+	projects []string
+	pulls    int
+}
+
+func (r *recordingPlanStore) DeletePlanForProject(owner, repo string, pullNum int, workspace, repoRelDir, projectName string) error {
+	r.projects = append(r.projects, fmt.Sprintf("%s|%s|%d|%s|%s|%s", owner, repo, pullNum, workspace, repoRelDir, projectName))
+	return nil
+}
+
+func (r *recordingPlanStore) DeleteForPull(string, string, int) error {
+	r.pulls++
+	return nil
+}
+
+// Plan store keys do not include the VCS host, so the unlock deletes only the
+// stored plans of the locks it released, by the repo's owner and name (which
+// for a GitLab subgroup differ from splitting the full name at the first /).
+func TestDeleteLocksByPull_DeletesOnlyReleasedPlansFromStore(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	RegisterMockTestingT(t)
+	ctrl := gomock.NewController(t)
+	l := lockmocks.NewMockLocker(ctrl)
+	store := &recordingPlanStore{}
+	pull := models.PullRequest{
+		Num:      2,
+		BaseRepo: models.Repo{FullName: "group/sub/repo", Owner: "group/sub", Name: "repo", VCSHost: models.VCSHost{Hostname: "gitlab.com"}},
+	}
+	lock := models.ProjectLock{Pull: pull, Workspace: "default", Project: models.Project{Path: "dir1", RepoFullName: "group/sub/repo"}}
+	expectPullLocks(l, lock)
+	dlc := events.DefaultDeleteLockCommand{Locker: l, WorkingDir: events.NewMockWorkingDir(), PlanStore: store}
+
+	n, err := dlc.DeleteLocksByPull(logger, pull.BaseRepo, pull.Num)
+	Ok(t, err)
+	Equals(t, 1, n)
+	Equals(t, []string{"group/sub|repo|2|default|dir1|"}, store.projects)
+	Equals(t, 0, store.pulls)
+}
+
+// Discarding one plan from the UI takes the pull's working-dir lock, so no
+// plan or apply of that pull runs meanwhile.
+func TestDeleteLock_RefusesWhileACommandRuns(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	RegisterMockTestingT(t)
+	ctrl := gomock.NewController(t)
+	l := lockmocks.NewMockLocker(ctrl)
+	workingDirLocker := events.NewDefaultWorkingDirLocker()
+	pull := unlockTestPull()
+	lock := &models.ProjectLock{Pull: pull, Workspace: "default", Project: models.Project{Path: "dir1", RepoFullName: "owner/repo"}}
+	release, err := workingDirLocker.TryLock(pull.BaseRepo, pull.Num, "default", "dir1", "", command.Plan, events.WorkingDirLockMetadata{})
+	Ok(t, err)
+	defer release()
+	l.EXPECT().GetLock("id").Return(lock, nil)
+	dlc := events.DefaultDeleteLockCommand{Locker: l, WorkingDir: events.NewMockWorkingDir(), WorkingDirLocker: workingDirLocker}
+
+	_, err = dlc.DeleteLock(logger, "id")
+	ErrContains(t, "currently locked", err)
+}
+
+// If the lock was released and taken again before the pull's working-dir lock
+// was held, the plan read first is not the one to discard: nothing is changed.
+func TestDeleteLock_LockChangedBeforePullWasLocked(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	RegisterMockTestingT(t)
+	ctrl := gomock.NewController(t)
+	l := lockmocks.NewMockLocker(ctrl)
+	workingDir := events.NewMockWorkingDir()
+	pull := unlockTestPull()
+	first := &models.ProjectLock{Pull: pull, Workspace: "default", Project: models.Project{Path: "dir1", RepoFullName: "owner/repo"}, Time: time.Unix(100, 0)}
+	again := *first
+	again.Time = time.Unix(200, 0)
+	gomock.InOrder(
+		l.EXPECT().GetLock("id").Return(first, nil),
+		l.EXPECT().GetLock("id").Return(&again, nil),
+	)
+	dlc := events.DefaultDeleteLockCommand{Locker: l, WorkingDir: workingDir, WorkingDirLocker: events.NewDefaultWorkingDirLocker()}
+
+	_, err := dlc.DeleteLock(logger, "id")
+	ErrContains(t, "the lock changed", err)
+	workingDir.VerifyWasCalled(Never()).DeletePlan(Any[logging.SimpleLogging](), Any[models.Repo](), Any[models.PullRequest](), Any[string](), Any[string](), Any[string]())
+}
+
+// If the exact lock read is gone by the time it is released (the pull was
+// closed meanwhile), the discard stands and the pull's own plan files are
+// still removed: they are keyed by the pull, not by the lock.
+func TestDeleteLock_LockAlreadyReleased(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	RegisterMockTestingT(t)
+	ctrl := gomock.NewController(t)
+	l := lockmocks.NewMockLocker(ctrl)
+	workingDir := events.NewMockWorkingDir()
+	lock := &models.ProjectLock{Pull: unlockTestPull(), Workspace: "default", Project: models.Project{Path: "dir1", RepoFullName: "owner/repo"}}
+	l.EXPECT().GetLock("id").Return(lock, nil)
+	l.EXPECT().UnlockExact(*lock).Return(nil, nil)
+	dlc := events.DefaultDeleteLockCommand{Locker: l, WorkingDir: workingDir}
+
+	got, err := dlc.DeleteLock(logger, "id")
+	Ok(t, err)
+	Equals(t, lock, got)
+	workingDir.VerifyWasCalledOnce().DeletePlan(Any[logging.SimpleLogging](), Eq(lock.Pull.BaseRepo), Eq(lock.Pull), Eq("default"), Eq("dir1"), Eq(""))
 }

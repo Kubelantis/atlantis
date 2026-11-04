@@ -58,7 +58,7 @@ type PullClosedExecutor struct {
 // PullJobsCleaner drops all job output of a pull request, whatever project
 // it belongs to. It is implemented by jobs.AsyncProjectCommandOutputHandler.
 type PullJobsCleaner interface {
-	CleanUpPullJobs(repoFullName string, pullNum int)
+	CleanUpPullJobs(repo models.Repo, pullNum int)
 }
 
 // PeerCleaner asks other replicas to clean up a closed pull's local
@@ -80,7 +80,7 @@ type ReplicaCleaner struct {
 // CleanUpReplica implements the replica-local part of closing a pull.
 func (c *ReplicaCleaner) CleanUpReplica(logger logging.SimpleLogging, repo models.Repo, pull models.PullRequest) error {
 	if c.Jobs != nil {
-		c.Jobs.CleanUpPullJobs(pull.BaseRepo.FullName, pull.Num)
+		c.Jobs.CleanUpPullJobs(pull.BaseRepo, pull.Num)
 	}
 	if c.CancellationTracker != nil {
 		c.CancellationTracker.Clear(pull)
@@ -121,13 +121,14 @@ func (p *PullClosedExecutor) CleanUpPull(logger logging.SimpleLogging, repo mode
 
 	if pj, ok := p.LogStreamResourceCleaner.(PullJobsCleaner); ok {
 		// One pass over every job of the pull, persisted logs included.
-		pj.CleanUpPullJobs(pull.BaseRepo.FullName, pull.Num)
+		pj.CleanUpPullJobs(pull.BaseRepo, pull.Num)
 	} else if pullStatus != nil {
 		for _, project := range pullStatus.Projects {
 			jobContext := jobs.PullInfo{
 				PullNum:      pull.Num,
 				Repo:         pull.BaseRepo.Name,
 				RepoFullName: pull.BaseRepo.FullName,
+				VCSHostname:  pull.BaseRepo.VCSHost.Hostname,
 				ProjectName:  project.ProjectName,
 				Path:         project.RepoRelDir,
 				Workspace:    project.Workspace,
@@ -143,6 +144,7 @@ func (p *PullClosedExecutor) CleanUpPull(logger logging.SimpleLogging, repo mode
 			PullNum:      pull.Num,
 			Repo:         pull.BaseRepo.Name,
 			RepoFullName: pull.BaseRepo.FullName,
+			VCSHostname:  pull.BaseRepo.VCSHost.Hostname,
 		})
 	}
 

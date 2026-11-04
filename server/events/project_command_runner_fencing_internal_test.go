@@ -15,7 +15,7 @@ type fencingLocker struct {
 	lost bool
 }
 
-func (f *fencingLocker) LostPullLock(string, int) bool { return f.lost }
+func (f *fencingLocker) LostPullLock(models.Repo, int) bool { return f.lost }
 
 type countingStep struct{ calls int }
 

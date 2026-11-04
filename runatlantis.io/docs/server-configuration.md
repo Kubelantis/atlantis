@@ -1184,6 +1184,10 @@ ATLANTIS_KUBERNETES_IDENTITY="atlantis-0"
 
 Unique identity of this replica, used as the holder of its Leases. Defaults to `$POD_NAME`, then the hostname.
 
+Each replica needs its own identity: don't set this flag in configuration shared by every replica. Each run of the process also gets a random ID, and pull request locks are held as `<identity>/<ID>`. So two processes with the same identity never share a lock: a shared value, a force-deleted pod whose process is still running, or one still on an earlier version during an upgrade. The second process logs an error, sets `atlantis_cluster_identity_conflict` to 1 and stays not ready until the first one stops. Membership Leases keep `<identity>` as the holder and record the ID in an annotation, so replicas on earlier versions still read member names correctly during a rolling upgrade.
+
+After a crash, a restarted replica waits for the Leases of its previous run to expire: up to 15 seconds before it rejoins the cluster, and up to 30 seconds before it can lock a pull request that run was working on. A graceful shutdown releases them, so a normal restart doesn't wait.
+
 ### `--kubernetes-namespace`
 
 ```bash
