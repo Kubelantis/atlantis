@@ -451,7 +451,9 @@ atlantis server --cluster-plan-holder-wait-seconds=180
 ATLANTIS_CLUSTER_PLAN_HOLDER_WAIT_SECONDS=180
 ```
 
-When no external plan store is configured, `atlantis apply` runs on the replica that made the plan, because that is where the plan files are. If that replica is restarting (a StatefulSet pod keeps its name and volume), the apply waits up to this many seconds for it to come back before running on another replica, which may need a new plan. Defaults to `180`; a negative value disables waiting.
+When no external plan store is configured, `atlantis apply` runs on the replica that made the plan, because that is where the plan files are. If that replica is restarting, draining or being rescheduled (a StatefulSet pod keeps its name, and its volume unless the volume is node-local and the node is lost), the apply waits up to this many seconds for it to come back. Defaults to `180`; a negative value disables waiting.
+
+The wait limits one apply, not the plans. If the replica is away longer, that apply runs on another replica, which doesn't have the plan files and refuses it. The plans are still on the replica's volume, and it's still recorded as their holder, so an `atlantis apply` after it returns uses them, as long as they are still valid. A new plan is needed only if the plans are lost with the volume, for example when the replica is scaled away. With more than one replica, configure a shared plan store (see [`--enable-external-stores`](#enable-external-stores)) so any replica can apply.
 
 ### `--cluster-port`
 

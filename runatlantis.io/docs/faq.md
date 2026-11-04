@@ -16,7 +16,12 @@ A: Atlantis server can easily be run under the supervision of an init system lik
 
 Atlantis stores locks and pull request status in the Kubernetes API (Leases and `PullStatus` resources), so any number of replicas can run at once. Each pull request is handled by one replica; webhooks that reach another replica are forwarded to it. See [Kubernetes-native Atlantis](https://github.com/App-First-Step/katlantis/blob/master/docs/kubernetes-native.md) and the Helm chart.
 
-Clones, plans and job logs are kept on each replica's volume by default, and applies are routed to the replica that made the plan. To make plans and completed job logs available to every replica, and keep them if a replica is lost, enable `--enable-external-stores` with an S3-compatible `plan_store` and `log_store`. If a plan is lost anyway, run `atlantis plan` again: `atlantis apply` refuses to run without a matching plan.
+Clones, plans and job logs are kept on each replica's volume by default, and applies are routed to the replica that made the plan. Two cases differ:
+
+- **The replica is away for a while**, for example restarting, draining long-running work during a rolling update, or being rescheduled with its volume. An apply of its plans waits for it (see [`--cluster-plan-holder-wait-seconds`](server-configuration.md#cluster-plan-holder-wait-seconds)), and if it is away longer, that apply fails. The plans are kept: run `atlantis apply` again once the replica is back. It uses them as long as they are still valid, for example with no new commits since the plan.
+- **The plans are lost with the volume**, for example because the replica was scaled away, which deletes its volume, or its node-local volume was lost with the node. Run `atlantis plan` again: `atlantis apply` refuses to run without a matching plan.
+
+To make plans and completed job logs available to every replica, so neither case blocks an apply, enable `--enable-external-stores` with an S3-compatible `plan_store` and `log_store`. With more than one replica, do this at least for plans.
 
 **Q: How to add SSL to Atlantis server?**
 
