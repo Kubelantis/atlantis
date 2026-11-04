@@ -46,6 +46,12 @@ Durations move to new names, for example `atlantis_project_command_duration_seco
 The chart gains an optional HPA metric on pool utilization, served through prometheus-adapter as a Pods metric, alongside CPU. CPU remains the default because it needs no adapter.
 
 **5. Transition.**
+- **Existing counters that break the naming rule are renamed in the same release.** The cluster and plan risk counters added for Kubernetes-native Atlantis already have bounded labels, but lack the `_total` suffix:
+  - `atlantis_cluster_routing_*`: `forward_success`, `forward_error`, `forward_ambiguous`, `local`, `plan_holder_wait`, `plan_holder_timeout` and `peer_cleanup_error`;
+  - `atlantis_cluster_pull_lock_lost`;
+  - `atlantis_plan_risk_error`.
+
+  Each gains `_total`. The cluster gauges (`members`, `leader`, `api_healthy`, `identity_conflict`) already follow the conventions and keep their names. The chart's alert rules that use a renamed counter (`AtlantisForwardingErrors`, `AtlantisPlanRiskErrors`) change with it, and the chart's `promtool` tests cover them.
 - **The first minor release with this change** emits only the new metrics by default. A server-side config key, `metrics.legacy: true`, also emits the old names, labels and summaries, so dashboards can be migrated.
 - **The next minor release** removes the old metrics and the key. The release notes list each old metric and its replacement, and the docs gain a metrics reference page.
 
@@ -62,4 +68,8 @@ The chart gains an optional HPA metric on pool utilization, served through prome
 - **Breaking for dashboards and alerts** that use the removed labels or the summary quantiles. `metrics.legacy` gives one release to migrate, and the release notes map old metrics to new ones.
 - **Per-PR or per-project timing** now comes from logs, traces and audit events, unless `metrics.labels` opts in to repo and project labels.
 - **Statsd** loses nothing: its reporter already dropped the tags, and its timers are unchanged.
-- **Follow-ups (#28):** fix the chart's membership alert for HPA (P3), add the remaining scaling and reliability metrics under these conventions, and add alerts for pool saturation and a nearly full data volume.
+- **Follow-ups (#28):**
+  - add the remaining scaling and reliability metrics under these conventions;
+  - add alerts for pool saturation and a nearly full data volume, with `promtool` tests in the chart CI.
+
+  The chart's membership alert for HPA (P3) is already fixed by #44, independently of this ADR.
