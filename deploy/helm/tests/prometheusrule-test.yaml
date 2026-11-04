@@ -1,0 +1,74 @@
+# promtool unit tests for the chart's PrometheusRule. The chart CI renders the
+# rule with the release name "atlantis" in namespace "default" and HPA enabled
+# (minReplicas 2), writes its spec to rules.yaml next to this file, and runs
+# `promtool test rules`.
+rule_files:
+  - rules.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # Three ready replicas that all see each other: no alert.
+  - interval: 1m
+    input_series:
+      - series: 'atlantis_cluster_members{namespace="default", service="atlantis", pod="atlantis-0"}'
+        values: '3x20'
+      - series: 'atlantis_cluster_members{namespace="default", service="atlantis", pod="atlantis-1"}'
+        values: '3x20'
+      - series: 'atlantis_cluster_members{namespace="default", service="atlantis", pod="atlantis-2"}'
+        values: '3x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: AtlantisMembershipDegraded
+        exp_alerts: []
+
+  # HPA scaled to three, and one replica sees only two members. The floor
+  # (minReplicas 2) is still met, so only the comparison with the ready
+  # replicas catches it.
+  - interval: 1m
+    input_series:
+      - series: 'atlantis_cluster_members{namespace="default", service="atlantis", pod="atlantis-0"}'
+        values: '3x20'
+      - series: 'atlantis_cluster_members{namespace="default", service="atlantis", pod="atlantis-1"}'
+        values: '3x20'
+      - series: 'atlantis_cluster_members{namespace="default", service="atlantis", pod="atlantis-2"}'
+        values: '2x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: AtlantisMembershipDegraded
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: AtlantisMembershipDegraded
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: An Atlantis replica sees fewer live members than there are ready replicas, or fewer than the configured minimum.
+
+  # Only one replica is ready and it sees only itself: below the floor.
+  - interval: 1m
+    input_series:
+      - series: 'atlantis_cluster_members{namespace="default", service="atlantis", pod="atlantis-0"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: AtlantisMembershipDegraded
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: An Atlantis replica sees fewer live members than there are ready replicas, or fewer than the configured minimum.
+
+  # Another release in the same namespace is not counted with this one.
+  - interval: 1m
+    input_series:
+      - series: 'atlantis_cluster_members{namespace="default", service="atlantis", pod="atlantis-0"}'
+        values: '2x20'
+      - series: 'atlantis_cluster_members{namespace="default", service="atlantis", pod="atlantis-1"}'
+        values: '2x20'
+      - series: 'atlantis_cluster_members{namespace="default", service="other-atlantis", pod="other-atlantis-0"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: AtlantisMembershipDegraded
+        exp_alerts: []
