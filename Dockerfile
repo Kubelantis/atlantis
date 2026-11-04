@@ -206,6 +206,14 @@ FROM deps AS cdktn-deps
 ARG TARGETPLATFORM
 ARG NODE_VERSION
 ARG CDKTN_VERSION
+# The Node.js archive is .tar.xz; the slim Debian base has no xz. Only this
+# build stage needs it: the runtime images copy /opt/node from here.
+# renovate: datasource=deb depName=xz-utils
+ENV DEBIAN_XZ_UTILS_VERSION="5.8.1-1+deb13u2"
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends xz-utils=${DEBIAN_XZ_UTILS_VERSION} && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 WORKDIR /tmp/build
 RUN case ${TARGETPLATFORM} in \
         "linux/amd64") NODE_ARCH=x64 ;; \
