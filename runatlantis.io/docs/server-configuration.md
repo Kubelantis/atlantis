@@ -697,6 +697,8 @@ ATLANTIS_ENABLE_EXTERNAL_STORES=true
 
 Enable external storage backends configured in the server-side repo config (`external_stores` block). When set, Atlantis reads the `external_stores` section from the repo config YAML to initialize backends such as S3 for plan file persistence (`external_stores.plan_store`) and for archiving completed job logs (`external_stores.log_store`), so that any replica can apply plans and serve job output. Both accept `server_side_encryption` (`AES256`, `aws:kms` or `aws:kms:dsse`) and `kms_key_id`.
 
+Archived job logs hold Terraform output, which can include sensitive values. They're deleted when their pull request is closed, but a log that a replica uploads while it can't be reached for that cleanup stays in the bucket. Add an S3 lifecycle rule that expires objects under the log store's prefix after a retention period that suits you (for example 30 to 90 days) as a backstop.
+
 ### `--enable-policy-checks` <Badge text="v0.17.0" type="info"/>
 
 ```bash
