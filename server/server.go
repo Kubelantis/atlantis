@@ -1064,6 +1064,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 	}
 
 	apiController := &controllers.APIController{
+		Drainer:                         drainer,
 		APISecret:                       []byte(userConfig.APISecret),
 		Locker:                          lockingClient,
 		Logger:                          logger,
