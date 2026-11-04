@@ -12,6 +12,7 @@ import (
 	"github.com/runatlantis/atlantis/server/core/objstore"
 	"github.com/runatlantis/atlantis/server/core/runtime"
 	"github.com/runatlantis/atlantis/server/logging"
+	tally "github.com/uber-go/tally/v4"
 )
 
 // externalPlanStore reports whether plans are kept where every replica can
@@ -46,7 +47,7 @@ func objstoreConfig(c valid.S3StoreConfig) objstore.Config {
 // newPlanStore returns the S3 plan store when configured, otherwise the local
 // plan store. A plan dir outside the data dir survives the loss of a checkout,
 // so plans there can be recovered after a restart without an external store.
-func newPlanStore(userConfig UserConfig, globalCfg valid.GlobalCfg, logger logging.SimpleLogging) (runtime.PlanStore, error) {
+func newPlanStore(userConfig UserConfig, globalCfg valid.GlobalCfg, logger logging.SimpleLogging, scope tally.Scope) (runtime.PlanStore, error) {
 	if externalPlanStore(userConfig, globalCfg) {
 		cfg := globalCfg.ExternalStores.PlanStore
 		if cfg.Type != "s3" {
@@ -57,6 +58,8 @@ func newPlanStore(userConfig UserConfig, globalCfg valid.GlobalCfg, logger loggi
 		if err != nil {
 			return nil, fmt.Errorf("initializing S3 plan store: %w", err)
 		}
+		// Reports atlantis_plan_store_delete_errors_total.
+		store.SetScope(scope.SubScope("plan_store"))
 		return store, nil
 	}
 	local := &runtime.LocalPlanStore{}

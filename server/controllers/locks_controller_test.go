@@ -358,3 +358,32 @@ func TestDeleteLock_CommentSuccess(t *testing.T) {
 		Eq("**Warning**: The plan for dir: `path` workspace: `workspace` was **discarded** via the Atlantis UI.\n\n"+
 			"To `apply` this plan you must run `plan` again."), Eq(""))
 }
+
+// A stored plan that couldn't be deleted doesn't make the discard fail: the
+// lock is released and the discard recorded, so the response is 200 and the
+// pull request gets the usual comment, but the response says what was left.
+func TestDeleteLock_PlanLeftInStore(t *testing.T) {
+	RegisterMockTestingT(t)
+	cp := vcsmocks.NewMockClient()
+	dlc := mocks2.NewMockDeleteLockCommand()
+	pull := models.PullRequest{BaseRepo: models.Repo{FullName: "owner/repo"}}
+	When(dlc.DeleteLock(Any[logging.SimpleLogging](), Eq("id"))).ThenReturn(&models.ProjectLock{
+		Pull:      pull,
+		Workspace: "workspace",
+		Project:   models.Project{Path: "path", RepoFullName: "owner/repo"},
+	}, &events.PlanStoreCleanupError{Err: errors.New("deleting plan from S3: forbidden")})
+	lc := controllers.LocksController{
+		DeleteLockCommand: dlc,
+		Logger:            logging.NewNoopLogger(t),
+		VCSClient:         cp,
+		WorkingDir:        mocks2.NewMockWorkingDir(),
+		WorkingDirLocker:  events.NewDefaultWorkingDirLocker(),
+	}
+	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
+	req = mux.SetURLVars(req, map[string]string{"id": "id"})
+	w := httptest.NewRecorder()
+	lc.DeleteLock(w, req)
+	ResponseContains(t, w, http.StatusOK, "Deleted lock id 'id', but its plan could not be deleted from the plan store")
+	cp.VerifyWasCalled(Once()).CreateComment(Any[logging.SimpleLogging](), Eq(pull.BaseRepo), Eq(pull.Num),
+		Any[string](), Eq(""))
+}

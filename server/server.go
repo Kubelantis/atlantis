@@ -699,7 +699,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		CommitStatusUpdater: commitStatusUpdater,
 		Router:              router,
 	}
-	planStore, err := newPlanStore(userConfig, globalCfg, logger)
+	planStore, err := newPlanStore(userConfig, globalCfg, logger, statsScope)
 	if err != nil {
 		return nil, err
 	}

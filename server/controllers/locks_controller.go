@@ -4,6 +4,7 @@
 package controllers
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -114,6 +115,14 @@ func (l *LocksController) DeleteLock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	lock, err := l.DeleteLockCommand.DeleteLock(l.Logger, idUnencoded)
+	// A stored plan left behind doesn't undo the discard: the lock was
+	// released and the discard recorded. Report it, but don't fail.
+	var cleanup *events.PlanStoreCleanupError
+	if lock != nil && errors.As(err, &cleanup) {
+		err = nil
+	} else {
+		cleanup = nil
+	}
 	if err != nil {
 		l.respond(w, logging.Error, http.StatusInternalServerError, "deleting lock failed with: '%s'", err)
 		return
@@ -138,6 +147,10 @@ func (l *LocksController) DeleteLock(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		l.Logger.Debug("skipping commenting on pull request and deleting workspace because BaseRepo field is empty")
+	}
+	if cleanup != nil {
+		l.respond(w, logging.Error, http.StatusOK, "Deleted lock id '%s', but its plan could not be deleted from the plan store: %s", id, cleanup)
+		return
 	}
 	l.respond(w, logging.Info, http.StatusOK, "Deleted lock id '%s'", id)
 }

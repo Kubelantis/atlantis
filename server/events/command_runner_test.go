@@ -2114,6 +2114,28 @@ func TestRunUnlockCommandFail_VCSComment(t *testing.T) {
 		Any[logging.SimpleLogging](), Eq(testdata.GithubRepo), Eq(testdata.Pull.Num), Eq("Failed to delete PR locks: err"), Eq("unlock"))
 }
 
+// When only stored plans are left behind, the locks were still released and
+// the plans discarded, so the comment says so instead of reporting a failure.
+func TestRunUnlockCommand_PlanLeftInStore_VCSComment(t *testing.T) {
+	vcsClient := setup(t)
+	pull := &github.PullRequest{State: github.Ptr("open")}
+	modelPull := models.PullRequest{BaseRepo: testdata.GithubRepo, State: models.OpenPullState, Num: testdata.Pull.Num}
+	When(githubGetter.GetPullRequest(Any[logging.SimpleLogging](), Eq(testdata.GithubRepo),
+		Eq(testdata.Pull.Num))).ThenReturn(pull, nil)
+	When(eventParsing.ParseGithubPull(Any[logging.SimpleLogging](), Eq(pull))).ThenReturn(modelPull, modelPull.BaseRepo,
+		testdata.GithubRepo, nil)
+	When(deleteLockCommand.DeleteLocksByPull(Any[logging.SimpleLogging](), Eq(testdata.GithubRepo),
+		Eq(testdata.Pull.Num))).ThenReturn(1, &events.PlanStoreCleanupError{Err: errors.New("forbidden")})
+
+	ch.RunCommentCommand(testdata.GithubRepo, &testdata.GithubRepo, nil, testdata.User, testdata.Pull.Num,
+		&events.CommentCommand{Name: command.Unlock})
+
+	vcsClient.VerifyWasCalledOnce().CreateComment(
+		Any[logging.SimpleLogging](), Eq(testdata.GithubRepo), Eq(testdata.Pull.Num),
+		Eq("All Atlantis locks for this PR have been unlocked and plans discarded, but some stored plans could not be deleted from the plan store: forbidden"),
+		Eq("unlock"))
+}
+
 func TestRunUnlockCommandFail_DisableUnlockLabel(t *testing.T) {
 	t.Log("if PR has label equal to disable-unlock-label unlock should fail")
 
