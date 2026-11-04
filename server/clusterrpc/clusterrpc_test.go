@@ -509,7 +509,8 @@ func TestShutdownWaitsForRoutedCommand(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("shutdown did not finish after the forward completed")
 	}
-	Equals(t, 1, remote.count())
+	// The owner acknowledges, then runs the command in the background.
+	remote.wait(t)
 }
 
 // A replica that is shutting down still forwards commands it receives: the
