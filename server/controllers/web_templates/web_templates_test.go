@@ -5,6 +5,7 @@ package web_templates
 
 import (
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,4 +96,21 @@ func TestGithubAppSetupTemplate(t *testing.T) {
 		CleanedBasePath: "/path",
 	})
 	Ok(t, err)
+}
+
+// A discard whose plan file stayed in the plan store is reported as a
+// warning, not as the plain success banner: the lock page passes the
+// controller's X-Atlantis-Warning header on, and the index page shows a fixed
+// warning (nothing from the URL is rendered).
+func TestDiscardWarningIsShown(t *testing.T) {
+	var lock strings.Builder
+	Ok(t, LockTemplate.Execute(&lock, LockDetailData{CleanedBasePath: "/path"}))
+	Assert(t, strings.Contains(lock.String(), `xhr.getResponseHeader("X-Atlantis-Warning") === "plan-store-cleanup"`), "lock page doesn't check the warning header")
+	// html/template escapes the base path's slash inside the JS string.
+	Assert(t, strings.Contains(lock.String(), `"\/path/?discard=true" + warning`), "lock page doesn't pass the warning on")
+
+	var index strings.Builder
+	Ok(t, IndexTemplate.Execute(&index, IndexData{CleanedBasePath: "/path"}))
+	Assert(t, strings.Contains(index.String(), `<p class="js-discard-warning">`), "index page has no warning banner")
+	Assert(t, strings.Contains(index.String(), `indexOf("plan_store=failed")`), "index page doesn't show the warning banner")
 }

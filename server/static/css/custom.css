@@ -380,6 +380,10 @@ tbody {
   font-family: monospace, monospace; font-size: 1.1em; text-align: center; display: none;
 }
 
+.js-discard-warning {
+  font-family: monospace, monospace; font-size: 1.1em; text-align: center; display: none; color: #b45309;
+}
+
 .github-app-msg {
   font-family: monospace, monospace; font-size: 1.1em; text-align: center;
 }

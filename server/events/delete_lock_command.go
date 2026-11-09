@@ -19,7 +19,6 @@ import (
 
 //go:generate go tool pegomock generate github.com/runatlantis/atlantis/server/events --package mocks -o mocks/mock_delete_lock_command.go DeleteLockCommand
 
-// DeleteLockCommand is the first step after a command request has been parsed.
 // PlanStoreCleanupError reports stored plans that couldn't be deleted from
 // the external plan store. It is returned only when that is the only problem:
 // the locks were released and the plans recorded as discarded, so they can't
@@ -29,6 +28,7 @@ type PlanStoreCleanupError struct{ Err error }
 func (e *PlanStoreCleanupError) Error() string { return e.Err.Error() }
 func (e *PlanStoreCleanupError) Unwrap() error { return e.Err }
 
+// DeleteLockCommand is the first step after a command request has been parsed.
 type DeleteLockCommand interface {
 	DeleteLock(logger logging.SimpleLogging, id string) (*models.ProjectLock, error)
 	DeleteLocksByPull(logger logging.SimpleLogging, repo models.Repo, pullNum int) (int, error)

@@ -354,14 +354,17 @@ func TestDeleteLock_CommentSuccess(t *testing.T) {
 	w := httptest.NewRecorder()
 	lc.DeleteLock(w, req)
 	ResponseContains(t, w, http.StatusOK, "Deleted lock id 'id'")
+	Equals(t, "", w.Header().Get(controllers.WarningHeader))
 	cp.VerifyWasCalled(Once()).CreateComment(Any[logging.SimpleLogging](), Eq(pull.BaseRepo), Eq(pull.Num),
 		Eq("**Warning**: The plan for dir: `path` workspace: `workspace` was **discarded** via the Atlantis UI.\n\n"+
 			"To `apply` this plan you must run `plan` again."), Eq(""))
 }
 
 // A stored plan that couldn't be deleted doesn't make the discard fail: the
-// lock is released and the discard recorded, so the response is 200 and the
-// pull request gets the usual comment, but the response says what was left.
+// lock is released and the discard recorded, so the response is 200. The
+// pull request comment says the plan file is still stored, without the raw
+// error, and the response header makes the UI show a warning instead of its
+// success banner.
 func TestDeleteLock_PlanLeftInStore(t *testing.T) {
 	RegisterMockTestingT(t)
 	cp := vcsmocks.NewMockClient()
@@ -384,6 +387,10 @@ func TestDeleteLock_PlanLeftInStore(t *testing.T) {
 	w := httptest.NewRecorder()
 	lc.DeleteLock(w, req)
 	ResponseContains(t, w, http.StatusOK, "Deleted lock id 'id', but its plan could not be deleted from the plan store")
+	Equals(t, controllers.PlanStoreCleanupWarning, w.Header().Get(controllers.WarningHeader))
 	cp.VerifyWasCalled(Once()).CreateComment(Any[logging.SimpleLogging](), Eq(pull.BaseRepo), Eq(pull.Num),
-		Any[string](), Eq(""))
+		Eq("**Warning**: The plan for dir: `path` workspace: `workspace` was **discarded** via the Atlantis UI.\n\n"+
+			"To `apply` this plan you must run `plan` again.\n\n"+
+			"The plan file could not be deleted from the plan store, so it is still stored there. "+
+			"It can't be applied; the Atlantis logs have the details."), Eq(""))
 }

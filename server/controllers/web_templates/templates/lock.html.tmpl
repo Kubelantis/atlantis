@@ -80,8 +80,10 @@ v{{ .AtlantisVersion }}
     $.ajax({
         url: '{{ .CleanedBasePath }}/locks?id='+lockId,
         type: 'DELETE',
-        success: function(result) {
-          window.location.replace("{{ .CleanedBasePath }}/?discard=true");
+        success: function(result, status, xhr) {
+          // The discard succeeded, but the plan file may still be stored.
+          var warning = xhr.getResponseHeader("X-Atlantis-Warning") === "plan-store-cleanup" ? "&plan_store=failed" : "";
+          window.location.replace("{{ .CleanedBasePath }}/?discard=true" + warning);
         }
     });
   });
