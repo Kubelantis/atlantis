@@ -701,6 +701,8 @@ Enable external storage backends configured in the server-side repo config (`ext
 
 Archived job logs hold Terraform output, which can include sensitive values. They're deleted when their pull request is closed, but a log that a replica uploads while it can't be reached for that cleanup stays in the bucket. Add an S3 lifecycle rule that expires objects under the log store's prefix after a retention period that suits you (for example 30 to 90 days) as a backstop.
 
+Plan files in the plan store hold the planned values, which can include sensitive values. Atlantis deletes a plan after it is applied, when it is discarded, and when its pull request is closed. If a delete fails, for example because of S3 permissions, throttling or a KMS error, the plan stays in the bucket. Atlantis logs the failure at `error`, counts it in `atlantis_plan_store_delete_errors_total`, and says so in the response to a UI discard and in the comment on `atlantis unlock`. The plan still can't be applied: that is decided by the pull request's status, not by the file. Add an S3 lifecycle rule that expires objects under the plan store's prefix after a retention period that suits you, as a backstop.
+
 ### `--enable-policy-checks` <Badge text="v0.17.0" type="info"/>
 
 ```bash

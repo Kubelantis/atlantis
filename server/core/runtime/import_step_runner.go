@@ -56,7 +56,7 @@ func (p *importStepRunner) Run(ctx command.ProjectContext, extraArgs []string, p
 		if _, planPathErr := os.Stat(planPath); !os.IsNotExist(planPathErr) {
 			ctx.Log.Info("import successful, deleting planfile")
 			if removeErr := p.planStore.Remove(ctx, planPath); removeErr != nil {
-				ctx.Log.Warn("failed to delete planfile after successful import: %s", removeErr)
+				ctx.Log.Err("failed to delete planfile after successful import: %s", removeErr)
 			}
 		}
 	}

@@ -19,6 +19,15 @@ import (
 
 //go:generate go tool pegomock generate github.com/runatlantis/atlantis/server/events --package mocks -o mocks/mock_delete_lock_command.go DeleteLockCommand
 
+// PlanStoreCleanupError reports stored plans that couldn't be deleted from
+// the external plan store. It is returned only when that is the only problem:
+// the locks were released and the plans recorded as discarded, so they can't
+// be applied, but the plan files are still in the bucket.
+type PlanStoreCleanupError struct{ Err error }
+
+func (e *PlanStoreCleanupError) Error() string { return e.Err.Error() }
+func (e *PlanStoreCleanupError) Unwrap() error { return e.Err }
+
 // DeleteLockCommand is the first step after a command request has been parsed.
 type DeleteLockCommand interface {
 	DeleteLock(logger logging.SimpleLogging, id string) (*models.ProjectLock, error)
@@ -115,7 +124,8 @@ func (l *DefaultDeleteLockCommand) DeleteLock(logger logging.SimpleLogging, id s
 			lock.Project.Path,
 			lock.Project.ProjectName,
 		); err != nil {
-			logger.Warn("Failed to delete plan from external store: %s", err)
+			logger.Err("plan discarded, but not deleted from the plan store: %s", err)
+			return lock, &PlanStoreCleanupError{Err: err}
 		}
 	}
 
@@ -174,6 +184,8 @@ func (l *DefaultDeleteLockCommand) DeleteLocksByPull(logger logging.SimpleLoggin
 	// Every plan is discarded now, so keep going past a failure: the
 	// remaining locks can be released safely.
 	var errs []error
+	// storeErrs are stored plans that couldn't be deleted; see PlanStoreCleanupError.
+	var storeErrs []error
 	numLocks := 0
 	for _, lock := range locks {
 		released, err := l.Locker.UnlockExact(lock)
@@ -197,7 +209,8 @@ func (l *DefaultDeleteLockCommand) DeleteLocksByPull(logger logging.SimpleLoggin
 		if l.PlanStore != nil {
 			base := lock.Pull.BaseRepo
 			if err := l.PlanStore.DeletePlanForProject(base.Owner, base.Name, pullNum, lock.Workspace, lock.Project.Path, lock.Project.ProjectName); err != nil {
-				logger.Warn("Failed to delete plan from external store: %s", err)
+				logger.Err("plan discarded, but not deleted from the plan store: %s", err)
+				storeErrs = append(storeErrs, err)
 			}
 		}
 	}
@@ -206,5 +219,11 @@ func (l *DefaultDeleteLockCommand) DeleteLocksByPull(logger logging.SimpleLoggin
 		logger.Debug("No locks found for repo '%v', pull request: %v", repoFullName, pullNum)
 	}
 
-	return numLocks, errors.Join(errs...)
+	if len(errs) > 0 {
+		return numLocks, errors.Join(append(errs, storeErrs...)...)
+	}
+	if len(storeErrs) > 0 {
+		return numLocks, &PlanStoreCleanupError{Err: errors.Join(storeErrs...)}
+	}
+	return numLocks, nil
 }

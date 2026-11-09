@@ -4,6 +4,7 @@
 package events
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 
@@ -61,7 +62,14 @@ func (u *UnlockCommandRunner) Run(ctx *command.Context, _ *CommentCommand) {
 	var numLocks int
 	if err == nil && !hasLabel {
 		numLocks, err = u.deleteLockCommand.DeleteLocksByPull(ctx.Log, baseRepo, pullNum)
-		if err != nil {
+		var cleanup *PlanStoreCleanupError
+		if errors.As(err, &cleanup) {
+			// The locks were released and the plans discarded; only stored
+			// plan files were left behind.
+			vcsMessage = fmt.Sprintf("All Atlantis locks for this PR have been unlocked and plans discarded, but some stored plans could not be deleted from the plan store: %s", cleanup)
+			ctx.Log.Err("unlocked pull %d, but stored plans were left in the plan store: %s", pullNum, cleanup)
+			err = nil
+		} else if err != nil {
 			vcsMessage = fmt.Sprintf("Failed to delete PR locks: %s", err)
 			ctx.Log.Err("failed to delete locks by pull %s", err.Error())
 		}

@@ -613,3 +613,50 @@ func TestDeleteLock_LockAlreadyReleased(t *testing.T) {
 	Equals(t, lock, got)
 	workingDir.VerifyWasCalledOnce().DeletePlan(Any[logging.SimpleLogging](), Eq(lock.Pull.BaseRepo), Eq(lock.Pull), Eq("default"), Eq("dir1"), Eq(""))
 }
+
+// failingPlanStore fails every stored plan deletion.
+type failingPlanStore struct{ planstore.PlanStore }
+
+func (failingPlanStore) DeletePlanForProject(string, string, int, string, string, string) error {
+	return fmt.Errorf("deleting plan from S3: %w: forbidden", planstore.ErrNotDeleted)
+}
+
+// A stored plan that can't be deleted doesn't undo the unlock: the locks are
+// released and the plans discarded, and the caller is told what was left.
+func TestDeleteLocksByPull_ReportsPlansLeftInStore(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	RegisterMockTestingT(t)
+	ctrl := gomock.NewController(t)
+	l := lockmocks.NewMockLocker(ctrl)
+	pull := models.PullRequest{Num: 2, BaseRepo: models.Repo{FullName: "owner/repo", Owner: "owner", Name: "repo"}}
+	expectPullLocks(l, models.ProjectLock{Pull: pull, Workspace: "default", Project: models.Project{Path: "dir1", RepoFullName: "owner/repo"}})
+	dlc := events.DefaultDeleteLockCommand{Locker: l, WorkingDir: events.NewMockWorkingDir(), PlanStore: failingPlanStore{}}
+
+	n, err := dlc.DeleteLocksByPull(logger, pull.BaseRepo, pull.Num)
+	Equals(t, 1, n)
+	var cleanup *events.PlanStoreCleanupError
+	Assert(t, errors.As(err, &cleanup), "expected a PlanStoreCleanupError, got %v", err)
+	Assert(t, errors.Is(err, planstore.ErrNotDeleted), "expected ErrNotDeleted, got %v", err)
+}
+
+func TestDeleteLock_ReportsPlanLeftInStore(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	RegisterMockTestingT(t)
+	pull := models.PullRequest{BaseRepo: models.Repo{FullName: "owner/repo", Owner: "owner", Name: "repo"}}
+	ctrl := gomock.NewController(t)
+	l := lockmocks.NewMockLocker(ctrl)
+	lock := &models.ProjectLock{Pull: pull, Workspace: "default", Project: models.Project{Path: "path", RepoFullName: "owner/repo"}}
+	l.EXPECT().GetLock("id").Return(lock, nil).Times(2)
+	l.EXPECT().UnlockExact(*lock).Return(lock, nil)
+	db := kubedbtest.New(t)
+	t.Cleanup(func() { db.Close() })
+	dlc := events.DefaultDeleteLockCommand{
+		Locker: l, Database: db, WorkingDirLocker: events.NewDefaultWorkingDirLocker(),
+		WorkingDir: events.NewMockWorkingDir(), PlanStore: failingPlanStore{},
+	}
+
+	got, err := dlc.DeleteLock(logger, "id")
+	Assert(t, got != nil, "the released lock must be returned")
+	var cleanup *events.PlanStoreCleanupError
+	Assert(t, errors.As(err, &cleanup), "expected a PlanStoreCleanupError, got %v", err)
+}

@@ -260,7 +260,7 @@ func (p *PullClosedExecutor) CleanUpPull(logger logging.SimpleLogging, repo mode
 	// so S3 objects are not orphaned when local delete errors.
 	if p.PlanStore != nil {
 		if err := p.PlanStore.DeleteForPull(repo.Owner, repo.Name, pull.Num); err != nil {
-			logger.Warn("failed to delete plans from external store: %s", err)
+			logger.Err("failed to delete plans from the plan store; they stay in the bucket: %s", err)
 		}
 	}
 

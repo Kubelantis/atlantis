@@ -5,6 +5,7 @@ package planstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	securejoin "github.com/cyphar/filepath-securejoin"
+	tally "github.com/uber-go/tally/v4"
 
 	"github.com/runatlantis/atlantis/server/core/objstore"
 	"github.com/runatlantis/atlantis/server/events/command"
@@ -41,9 +43,31 @@ const (
 type S3PlanStore struct {
 	bucket *objstore.Bucket
 	logger logging.SimpleLogging
+	// deleteErrors counts failed plan deletions; nil until SetScope.
+	deleteErrors tally.Counter
 }
 
 var _ PlanStore = (*S3PlanStore)(nil)
+
+// ErrNotDeleted marks a plan that couldn't be deleted from the plan store.
+// The plan stays in the bucket, where it holds the planned values, until a
+// later delete or a lifecycle rule removes it. It never makes a discarded or
+// applied plan applicable again: that is decided by the pull's status.
+var ErrNotDeleted = errors.New("plan left in the plan store")
+
+// SetScope reports failed plan deletions as the counter delete_errors_total
+// in scope.
+func (s *S3PlanStore) SetScope(scope tally.Scope) {
+	s.deleteErrors = scope.Counter("delete_errors_total")
+}
+
+// deleteFailed counts a failed deletion and marks err with ErrNotDeleted.
+func (s *S3PlanStore) deleteFailed(what string, err error) error {
+	if s.deleteErrors != nil {
+		s.deleteErrors.Inc(1)
+	}
+	return fmt.Errorf("%s: %w: %w", what, ErrNotDeleted, err)
+}
 
 // NewS3PlanStore connects to the configured bucket and checks it is reachable.
 func NewS3PlanStore(cfg S3PlanStoreConfig, logger logging.SimpleLogging) (*S3PlanStore, error) {
@@ -137,18 +161,19 @@ func metadataValue(metadata map[string]string, key string) string {
 	return ""
 }
 
-// Remove implements PlanStore. A failed S3 delete is logged, not returned:
-// the stale object is removed with the rest of the pull when it closes.
+// Remove implements PlanStore. The local plan file is removed even when the
+// S3 delete fails; that failure is returned, marked ErrNotDeleted.
 func (s *S3PlanStore) Remove(ctx command.ProjectContext, planPath string) error {
 	key := s.s3Key(ctx, planPath)
 	c, cancel := opCtx()
 	defer cancel()
+	var storeErr error
 	if err := s.bucket.Delete(c, key); err != nil {
-		s.logger.Warn("failed to delete plan from S3 (key=%s): %v", key, err)
+		storeErr = s.deleteFailed(fmt.Sprintf("deleting plan from S3 (key=%s)", key), err)
 	} else {
 		s.logger.Debug("deleted plan from s3://%s/%s", s.bucket.Name, key)
 	}
-	return utils.RemoveIgnoreNonExistent(planPath)
+	return errors.Join(storeErr, utils.RemoveIgnoreNonExistent(planPath))
 }
 
 // pullPrefix is the key prefix of every plan of a pull, with a trailing slash.
@@ -229,21 +254,21 @@ func (s *S3PlanStore) DeleteForPull(owner, repo string, pullNum int) error {
 		s.logger.Info("deleted %d plan(s) from S3 for %s/%s#%d", deleted, owner, repo, pullNum)
 	}
 	if err != nil {
-		return fmt.Errorf("deleting plans from S3 for %s/%s#%d: %w", owner, repo, pullNum, err)
+		return s.deleteFailed(fmt.Sprintf("deleting plans from S3 for %s/%s#%d", owner, repo, pullNum), err)
 	}
 	return nil
 }
 
-// DeletePlanForProject implements PlanStore. Failures are logged, as for Remove.
+// DeletePlanForProject implements PlanStore. A failed delete is returned,
+// marked ErrNotDeleted.
 func (s *S3PlanStore) DeletePlanForProject(owner, repo string, pullNum int, workspace, repoRelDir, projectName string) error {
 	key := s.bucket.Key(owner, repo, strconv.Itoa(pullNum), workspace, repoRelDir, planFilename(workspace, projectName))
 	c, cancel := opCtx()
 	defer cancel()
 	if err := s.bucket.Delete(c, key); err != nil {
-		s.logger.Warn("failed to delete plan from S3 (key=%s): %v", key, err)
-	} else {
-		s.logger.Debug("deleted plan from s3://%s/%s", s.bucket.Name, key)
+		return s.deleteFailed(fmt.Sprintf("deleting plan from S3 (key=%s)", key), err)
 	}
+	s.logger.Debug("deleted plan from s3://%s/%s", s.bucket.Name, key)
 	return nil
 }
 

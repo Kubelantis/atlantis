@@ -4,6 +4,7 @@
 package controllers
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -100,6 +101,20 @@ func (l *LocksController) GetLock(w http.ResponseWriter, r *http.Request) {
 
 // DeleteLock handles deleting the lock at id and commenting back on the
 // pull request that the lock has been deleted.
+// WarningHeader is set on a successful response that the UI must not report
+// as a plain success; its value says what went wrong.
+const WarningHeader = "X-Atlantis-Warning"
+
+// PlanStoreCleanupWarning is the WarningHeader value of a discard whose plan
+// file couldn't be deleted from the plan store.
+const PlanStoreCleanupWarning = "plan-store-cleanup"
+
+// planStoreCleanupComment is added to the discard comment when the plan file
+// couldn't be deleted from the plan store. The error itself is only logged:
+// it can name the bucket and key.
+const planStoreCleanupComment = "\n\nThe plan file could not be deleted from the plan store, so it is still stored there. " +
+	"It can't be applied; the Atlantis logs have the details."
+
 func (l *LocksController) DeleteLock(w http.ResponseWriter, r *http.Request) {
 	id, ok := mux.Vars(r)["id"]
 	if !ok || id == "" {
@@ -114,6 +129,14 @@ func (l *LocksController) DeleteLock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	lock, err := l.DeleteLockCommand.DeleteLock(l.Logger, idUnencoded)
+	// A stored plan left behind doesn't undo the discard: the lock was
+	// released and the discard recorded. Report it, but don't fail.
+	var cleanup *events.PlanStoreCleanupError
+	if lock != nil && errors.As(err, &cleanup) {
+		err = nil
+	} else {
+		cleanup = nil
+	}
 	if err != nil {
 		l.respond(w, logging.Error, http.StatusInternalServerError, "deleting lock failed with: '%s'", err)
 		return
@@ -133,11 +156,20 @@ func (l *LocksController) DeleteLock(w http.ResponseWriter, r *http.Request) {
 		// above and kept the lock.
 		comment := fmt.Sprintf("**Warning**: The plan for dir: `%s` workspace: `%s` was **discarded** via the Atlantis UI.\n\n"+
 			"To `apply` this plan you must run `plan` again.", lock.Project.Path, lock.Workspace)
+		if cleanup != nil {
+			comment += planStoreCleanupComment
+		}
 		if err = l.VCSClient.CreateComment(l.Logger, lock.Pull.BaseRepo, lock.Pull.Num, comment, ""); err != nil {
 			l.Logger.Warn("failed commenting on pull request: %s", err)
 		}
 	} else {
 		l.Logger.Debug("skipping commenting on pull request and deleting workspace because BaseRepo field is empty")
+	}
+	if cleanup != nil {
+		// The UI shows a warning instead of its success banner.
+		w.Header().Set(WarningHeader, PlanStoreCleanupWarning)
+		l.respond(w, logging.Error, http.StatusOK, "Deleted lock id '%s', but its plan could not be deleted from the plan store: %s", id, cleanup)
+		return
 	}
 	l.respond(w, logging.Info, http.StatusOK, "Deleted lock id '%s'", id)
 }

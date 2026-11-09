@@ -21,6 +21,7 @@ import (
 	"github.com/runatlantis/atlantis/server/logging"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	tally "github.com/uber-go/tally/v4"
 )
 
 // mockS3Client records calls and returns configured responses.
@@ -261,14 +262,49 @@ func TestRemove_Success(t *testing.T) {
 	assert.True(t, os.IsNotExist(statErr))
 }
 
+// A plan left in the bucket holds the planned values, so a failed S3 delete
+// is returned, marked ErrNotDeleted, and the local file is still removed.
 func TestRemove_S3Error(t *testing.T) {
 	mock := &mockS3Client{deleteErr: errors.New("forbidden")}
 	store := planstore.NewS3PlanStoreWithClient(mock, "bucket", "", logging.NewNoopLogger(t))
 	ctx := testProjectContext()
+	planPath := filepath.Join(t.TempDir(), "test.tfplan")
+	require.NoError(t, os.WriteFile(planPath, []byte("data"), 0o600))
 
-	// S3 delete errors are logged but not returned (soft-fail).
-	err := store.Remove(ctx, "/tmp/whatever.tfplan")
-	assert.NoError(t, err)
+	err := store.Remove(ctx, planPath)
+	require.ErrorIs(t, err, planstore.ErrNotDeleted)
+	assert.ErrorContains(t, err, "forbidden")
+	_, statErr := os.Stat(planPath)
+	assert.True(t, os.IsNotExist(statErr), "the local plan file was not removed")
+}
+
+func TestDeletePlanForProject_S3Error(t *testing.T) {
+	mock := &mockS3Client{deleteErr: errors.New("forbidden")}
+	store := planstore.NewS3PlanStoreWithClient(mock, "bucket", "pfx", logging.NewNoopLogger(t))
+
+	err := store.DeletePlanForProject("acme", "infra", 42, "default", "dir", "")
+	require.ErrorIs(t, err, planstore.ErrNotDeleted)
+	assert.ErrorContains(t, err, "forbidden")
+}
+
+// Every failed delete is counted, so operators can alert on plans left in
+// the bucket.
+func TestDeleteErrorsAreCounted(t *testing.T) {
+	mock := &mockS3Client{
+		listOutput: &s3.ListObjectsV2Output{Contents: []s3types.Object{{Key: aws.String("acme/infra/42/default/plan.tfplan")}}},
+		deleteErr:  errors.New("forbidden"),
+	}
+	store := planstore.NewS3PlanStoreWithClient(mock, "bucket", "", logging.NewNoopLogger(t))
+	scope := tally.NewTestScope("", nil)
+	store.SetScope(scope)
+
+	_ = store.Remove(testProjectContext(), filepath.Join(t.TempDir(), "gone.tfplan"))
+	_ = store.DeletePlanForProject("acme", "infra", 42, "default", "dir", "")
+	_ = store.DeleteForPull("acme", "infra", 42)
+
+	counter, ok := scope.Snapshot().Counters()["delete_errors_total+"]
+	require.True(t, ok, "delete_errors_total was not reported")
+	assert.Equal(t, int64(3), counter.Value())
 }
 
 func TestRemove_LocalFileAlreadyGone(t *testing.T) {
@@ -432,4 +468,5 @@ func TestDeleteForPull_DeleteError(t *testing.T) {
 	// can warn that plans were left in the bucket.
 	err := store.DeleteForPull("acme", "infra", 42)
 	assert.ErrorContains(t, err, "forbidden")
+	assert.ErrorIs(t, err, planstore.ErrNotDeleted)
 }

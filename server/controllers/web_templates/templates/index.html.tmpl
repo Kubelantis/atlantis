@@ -9,7 +9,10 @@
   <script src="{{ .CleanedBasePath }}/static/js/jquery-3.5.1.min.js"></script>
   <script>
     $(document).ready(function () {
-      if (document.URL.indexOf("discard=true") !== -1) {
+      if (document.URL.indexOf("plan_store=failed") !== -1) {
+        // Stays until dismissed: the plan file is still stored.
+        $("p.js-discard-warning").show();
+      } else if (document.URL.indexOf("discard=true") !== -1) {
         $("p.js-discard-success").show();
         setTimeout(function() {
           $("p.js-discard-success").fadeOut('slow',function(){
@@ -30,6 +33,7 @@
     <a title="atlantis" href="{{ .CleanedBasePath }}/"><img class="hero" src="{{ .CleanedBasePath }}/static/images/atlantis-icon_512.png"/></a>
     <p class="title-heading">atlantis</p>
     <p class="js-discard-success"><strong>Plan discarded and unlocked!</strong></p>
+    <p class="js-discard-warning"><strong>Plan discarded and unlocked, but its plan file could not be deleted from the plan store.</strong> It can't be applied; the Atlantis logs have the details.</p>
   </section>
   <section>
     {{ if .ApplyLock.GlobalApplyLockEnabled }}
