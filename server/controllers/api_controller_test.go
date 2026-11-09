@@ -5470,7 +5470,7 @@ type fakeApplyLock struct {
 
 func (f fakeApplyLock) CheckApplyLock() (locking.ApplyCommandLock, error) { return f.lock, f.err }
 
-func postAPIApply(t *testing.T, ac *controllers.APIController) *httptest.ResponseRecorder {
+func postAPI(t *testing.T, handler func(http.ResponseWriter, *http.Request)) *httptest.ResponseRecorder {
 	t.Helper()
 	body, _ := json.Marshal(controllers.APIRequest{
 		Repository: "Repo",
@@ -5481,8 +5481,49 @@ func postAPIApply(t *testing.T, ac *controllers.APIController) *httptest.Respons
 	req, _ := http.NewRequest("POST", "", bytes.NewBuffer(body))
 	req.Header.Set(atlantisTokenHeader, atlantisToken)
 	w := httptest.NewRecorder()
-	ac.Apply(w, req)
+	handler(w, req)
 	return w
+}
+
+// API commands are tracked by the shutdown drain, so shutdown waits for them.
+func TestAPIController_ApplyIsTrackedByDrain(t *testing.T) {
+	ac, _, projectCommandRunner := setup(t)
+	drainer := &events.Drainer{}
+	ac.Drainer = drainer
+	var opsDuringApply int
+	When(projectCommandRunner.Apply(Any[command.ProjectContext]())).
+		Then(func([]Param) ReturnValues {
+			opsDuringApply = drainer.GetStatus().InProgressOps
+			return ReturnValues{command.ProjectCommandOutput{ApplySuccess: "success"}}
+		})
+
+	Equals(t, http.StatusOK, postAPI(t, ac.Apply).Code)
+	Equals(t, 1, opsDuringApply)
+	Equals(t, 0, drainer.GetStatus().InProgressOps)
+}
+
+// Once draining has begun, API commands are refused instead of starting work
+// that shutdown won't wait for.
+func TestAPIController_CommandsRefusedWhileDraining(t *testing.T) {
+	ac, projectCommandBuilder, _ := setup(t)
+	drainer := &events.Drainer{}
+	drainer.ShutdownBlocking()
+	ac.Drainer = drainer
+
+	for name, handler := range map[string]func(http.ResponseWriter, *http.Request){
+		"plan": ac.Plan, "apply": ac.Apply,
+	} {
+		w := postAPI(t, handler)
+		Equals(t, http.StatusServiceUnavailable, w.Code)
+		body, _ := io.ReadAll(w.Result().Body)
+		Assert(t, strings.Contains(string(body), "shutting down"), "%s: unexpected body %s", name, body)
+	}
+	projectCommandBuilder.VerifyWasCalled(Never()).BuildPlanCommands(Any[*command.Context](), Any[*events.CommentCommand]())
+}
+
+func postAPIApply(t *testing.T, ac *controllers.APIController) *httptest.ResponseRecorder {
+	t.Helper()
+	return postAPI(t, ac.Apply)
 }
 
 // /api/apply honours the global apply lock, as comment applies do: while it
