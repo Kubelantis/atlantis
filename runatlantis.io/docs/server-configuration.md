@@ -499,7 +499,8 @@ While a command runs, it holds its pull request: other commands of the pull requ
 
 - the processes the command's workflow steps and workflow hooks run are interrupted with `SIGINT`, and killed if they are still running [`--command-timeout-grace-seconds`](#command-timeout-grace-seconds) later;
 - steps and projects that haven't started are skipped;
-- the command reports `command timed out after <duration>` for the projects it didn't finish, and releases its locks.
+- the command reports `command timed out after <duration>` for the projects it didn't finish, and releases its locks. A step that was interrupted fails even if its process exits successfully, so a stopped apply is never recorded as applied;
+- if a process that left the step's process group (for example one started with `setsid`) keeps the step's output open, Atlantis stops waiting for it shortly after the kill.
 
 Git clones and fetches and policy checks aren't interrupted. Set the timeout well above your longest normal plan or apply: an apply interrupted midway leaves the infrastructure partly changed, as when it is cancelled by hand.
 

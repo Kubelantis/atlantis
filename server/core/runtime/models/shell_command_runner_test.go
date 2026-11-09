@@ -198,3 +198,43 @@ func TestShellCommandRunner_RunStopsAtDeadline(t *testing.T) {
 	Equals(t, "started\n", out)
 	Assert(t, time.Since(start) < 10*time.Second, "expected the step to stop at the deadline, took %s", time.Since(start))
 }
+
+// A streamed step that exits successfully after the interrupt was cut short,
+// so it fails with the timeout.
+func TestShellCommandRunner_InterruptedSuccessIsATimeout(t *testing.T) {
+	execCtx, cancel := command.WithExecDeadline(200*time.Millisecond, time.Minute)
+	defer cancel()
+	ctx := command.ProjectContext{Log: logging.NewNoopLogger(t), ExecContext: execCtx}
+	runner := models.NewShellCommandRunner(nil, `trap "exit 0" INT; while true; do sleep 0.1; done`, nil, t.TempDir(), false, nil)
+
+	_, err := runner.Run(ctx)
+
+	Assert(t, errors.Is(err, command.ErrTimedOut), "expected ErrTimedOut, got %v", err)
+	Assert(t, errors.Is(err, models.ErrInterrupted), "expected ErrInterrupted, got %v", err)
+}
+
+// A streamed step whose output is held open by a process that left the group
+// still ends after the kill.
+func TestShellCommandRunner_AbandonsOutputHeldOutsideTheGroup(t *testing.T) {
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skip("setsid is not installed")
+	}
+	defer func(d time.Duration) { models.AbandonDelay = d }(models.AbandonDelay)
+	models.AbandonDelay = 200 * time.Millisecond
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	t.Cleanup(func() {
+		if pid, err := os.ReadFile(pidFile); err == nil {
+			_ = exec.Command("kill", strings.TrimSpace(string(pid))).Run()
+		}
+	})
+	execCtx, cancel := command.WithExecDeadline(100*time.Millisecond, 200*time.Millisecond)
+	defer cancel()
+	ctx := command.ProjectContext{Log: logging.NewNoopLogger(t), ExecContext: execCtx}
+	runner := models.NewShellCommandRunner(nil, "setsid sleep 60 & echo $! > "+pidFile+"; sleep 60", nil, t.TempDir(), false, nil)
+
+	start := time.Now()
+	_, err := runner.Run(ctx)
+
+	Assert(t, errors.Is(err, command.ErrTimedOut), "expected ErrTimedOut, got %v", err)
+	Assert(t, time.Since(start) < 10*time.Second, "expected the step to end, took %s", time.Since(start))
+}

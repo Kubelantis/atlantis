@@ -12,8 +12,9 @@ import (
 
 func setProcessGroup(*exec.Cmd) {}
 
-func interruptGroup(cmd *exec.Cmd) {
-	_ = cmd.Process.Signal(os.Interrupt)
+// interruptGroup interrupts cmd and reports whether it did.
+func interruptGroup(cmd *exec.Cmd) bool {
+	return cmd.Process.Signal(os.Interrupt) == nil
 }
 
 func killGroup(cmd *exec.Cmd) {

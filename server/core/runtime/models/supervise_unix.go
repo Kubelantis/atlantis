@@ -21,16 +21,17 @@ func setProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr.Setpgid = true
 }
 
-func interruptGroup(cmd *exec.Cmd) { signalGroup(cmd, syscall.SIGINT) }
+// interruptGroup interrupts cmd's process group and reports whether it did.
+func interruptGroup(cmd *exec.Cmd) bool { return signalGroup(cmd, syscall.SIGINT) }
 
 func killGroup(cmd *exec.Cmd) { signalGroup(cmd, syscall.SIGKILL) }
 
 // signalGroup signals cmd's process group while its leader hasn't been
 // reaped: once cmd.Wait has returned, the group's ID may belong to another
-// process.
-func signalGroup(cmd *exec.Cmd, sig syscall.Signal) {
+// process. It reports whether it sent the signal.
+func signalGroup(cmd *exec.Cmd, sig syscall.Signal) bool {
 	if errors.Is(cmd.Process.Signal(syscall.Signal(0)), os.ErrProcessDone) {
-		return
+		return false
 	}
-	_ = syscall.Kill(-cmd.Process.Pid, sig)
+	return syscall.Kill(-cmd.Process.Pid, sig) == nil
 }

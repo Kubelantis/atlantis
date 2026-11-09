@@ -162,8 +162,14 @@ func (s *ShellCommandRunner) RunCommandAsync(ctx command.ProjectContext) (chan<-
 		stdin, _ := s.cmd.StdinPipe()
 
 		ctx.Log.Debug("starting '%s' in '%s'", s.describe(), s.workingDir)
-		stop, err := StartSupervised(ctx.ExecCtx(), s.cmd)
+		// If a process that left the group holds the output open after the
+		// deadline, closing the readers lets the scanners below finish.
+		supervision, err := StartSupervised(ctx.ExecCtx(), s.cmd, func() {
+			_ = stdout.Close()
+			_ = stderr.Close()
+		})
 		if err != nil {
+			err = supervision.Finish(err)
 			err = fmt.Errorf("running '%s' in '%s': %w", s.describe(), s.workingDir, err)
 			ctx.Log.Err("%s", err.Error())
 			outCh <- Line{Err: err}
@@ -232,8 +238,7 @@ func (s *ShellCommandRunner) RunCommandAsync(ctx command.ProjectContext) (chan<-
 		wg.Wait()
 
 		// Wait for the command to complete.
-		err = TimeoutError(ctx.ExecCtx(), s.cmd.Wait())
-		stop()
+		err = supervision.Finish(s.cmd.Wait())
 
 		dur := time.Since(start)
 		log := ctx.Log.With("duration", dur)
