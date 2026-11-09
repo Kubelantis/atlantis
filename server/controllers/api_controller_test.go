@@ -5512,6 +5512,59 @@ func TestAPIController_PlanReleasesOnlyItsOwnLocks(t *testing.T) {
 	Equals(t, http.StatusOK, w.Code)
 }
 
+// lostLeaseLocker reports the pull's lease lost from the lostFrom-th
+// LostPullLock call on (0 is the first).
+type lostLeaseLocker struct {
+	events.WorkingDirLocker
+	lostFrom int
+	calls    int
+}
+
+func (l *lostLeaseLocker) LostPullLock(models.Repo, int) bool {
+	l.calls++
+	return l.calls > l.lostFrom
+}
+
+// Once this replica loses the pull's lease, another replica may own the pull
+// and take its project locks, which look new to the command's snapshot. The
+// command then releases nothing, whether the lease was lost before its
+// cleanup or between listing the locks and releasing one.
+func TestAPIController_PlanKeepsLocksAfterLosingPullLease(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		lostFrom int
+		lists    int
+	}{
+		{"lost before cleanup", 0, 1},
+		{"lost during cleanup", 1, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := models.Repo{FullName: "Repo", VCSHost: models.VCSHost{Hostname: testVCSHostname(models.Gitlab), Type: models.Gitlab}}
+			pull := models.PullRequest{Num: 42, BaseRepo: repo}
+			newOwners := apiTestPullLock(pull, "taken", time.Unix(200, 0))
+			ac, _, _ := setup(t, func(config *apiControllerTestConfig) {
+				config.scriptLocks = func(locker *MockLocker) {
+					calls := []any{locker.EXPECT().List().Return(map[string]models.ProjectLock{}, nil)}
+					if tc.lists > 1 {
+						calls = append(calls, locker.EXPECT().List().Return(map[string]models.ProjectLock{"taken": newOwners}, nil))
+					}
+					gomock.InOrder(calls...)
+					locker.EXPECT().UnlockExact(gomock.Any()).Times(0)
+				}
+			})
+			fencer := &lostLeaseLocker{WorkingDirLocker: ac.WorkingDirLocker, lostFrom: tc.lostFrom}
+			ac.WorkingDirLocker = fencer
+
+			body, _ := json.Marshal(controllers.APIRequest{Repository: "Repo", Ref: "main", Type: "Gitlab", PR: 42, Projects: []string{"default"}})
+			req, _ := http.NewRequest("POST", "", bytes.NewBuffer(body))
+			req.Header.Set(atlantisTokenHeader, atlantisToken)
+			w := httptest.NewRecorder()
+			ac.Plan(w, req)
+			Assert(t, fencer.calls > tc.lostFrom, "expected the lease to be checked")
+		})
+	}
+}
+
 // An API command on a pull request holds the pull's lock, so it doesn't run
 // beside a comment command of the same pull.
 func TestAPIController_PlanRefusedWhilePullBusy(t *testing.T) {

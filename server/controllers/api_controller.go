@@ -245,6 +245,19 @@ func normalizeAPIBranchRef(ref string) string {
 	return models.NormalizeAPIRef(ref)
 }
 
+// lostPullLock reports whether this replica lost ctx's pull lease while the
+// API command ran. Another replica may own the pull since and have taken
+// project locks of it, which the command's snapshot can't tell from its own,
+// so the command releases none: they stay for the new owner, or for unlock.
+func (a *APIController) lostPullLock(ctx *command.Context) bool {
+	f, ok := a.WorkingDirLocker.(events.PullLockFencer)
+	if !ok || ctx.Pull.Num <= 0 || !f.LostPullLock(ctx.Pull.BaseRepo, ctx.Pull.Num) {
+		return false
+	}
+	ctx.Log.Warn("not releasing the project locks of this API command: this replica lost the lock of pull request %d to another replica", ctx.Pull.Num)
+	return true
+}
+
 // errPullBusy is returned when another command of the pull request is
 // running.
 var errPullBusy = errors.New("another command of this pull request is running")
@@ -273,6 +286,9 @@ func (a *APIController) guardPullLocks(ctx *command.Context, cmd command.Name) (
 	}
 	release := func() {
 		defer unlockPull()
+		if a.lostPullLock(ctx) {
+			return
+		}
 		after, err := a.pullLocks(ctx.Pull)
 		if err != nil {
 			ctx.Log.Err("not releasing the project locks of this API command: %s", err)
@@ -281,6 +297,11 @@ func (a *APIController) guardPullLocks(ctx *command.Context, cmd command.Name) (
 		for key, lock := range after {
 			if prev, ok := before[key]; ok && prev.Time.Equal(lock.Time) {
 				continue
+			}
+			// Checked before each release: a lock taken after the lease was
+			// lost belongs to the pull's new owner.
+			if a.lostPullLock(ctx) {
+				return
 			}
 			if _, err := a.Locker.UnlockExact(lock); err != nil {
 				ctx.Log.Err("releasing project lock %q: %s", key, err)
