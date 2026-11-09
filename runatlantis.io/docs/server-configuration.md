@@ -1821,12 +1821,14 @@ provided as a JSON string. The map key is the header name and the value is the h
 ### `--websocket-check-origin` <Badge text="v0.19.0+" type="info"/>
 
 ```bash
-atlantis server --websocket-check-origin
+atlantis server --websocket-check-origin=false
 # or
-ATLANTIS_WEBSOCKET_CHECK_ORIGIN=true
+ATLANTIS_WEBSOCKET_CHECK_ORIGIN=false
 ```
 
-Only allow websockets connection when they originate from the running Atlantis web server
+Job pages stream their output over a websocket. With this check, Atlantis refuses a websocket whose `Origin` host differs from the request's `Host`, so another site can't open one in a signed-in user's browser (cross-site websocket hijacking). Requests without an `Origin` header are still accepted; browsers always send one.
+
+Defaults to `true` (see [ADR 0005](https://github.com/Kubelantis/atlantis/blob/master/docs/adr/0005-check-websocket-origin-by-default.md)); it defaulted to `false` before. Set it to `false` only if live job output stops streaming because the browser's origin differs from the `Host` Atlantis sees: a proxy that rewrites `Host` to an internal name, or job pages embedded in another site. Preserving `Host` in the proxy is the better fix.
 
 ### `--write-git-creds` <Badge text="v0.11.0+" type="info"/>
 
