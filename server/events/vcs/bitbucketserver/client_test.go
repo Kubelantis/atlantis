@@ -313,4 +313,6 @@ func assertBitbucketServerPullRequestIdentityIncludesBaseBranch(t *testing.T) {
 	Ok(t, err)
 	Equals(t, "bdcaa224f4b65edb853a689404ef79cf47d8cdda", identity.HeadCommit)
 	Equals(t, "main", identity.BaseBranch)
+	// The fixture is merged, so the live state is closed.
+	Equals(t, models.ClosedPullState, identity.State)
 }

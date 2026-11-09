@@ -111,6 +111,12 @@ func preWorkflowHooksConfigured(runner PreWorkflowHooksCommandRunner, ctx *comma
 
 // DefaultCommandRunner is the first step when processing a comment command.
 type DefaultCommandRunner struct {
+	// ClosedPulls, if set, holds the closed marks of pulls whose cleanup is
+	// due. A command on a pull marked closed runs only if LivePullFetcher
+	// shows the pull was reopened, and then clears the mark; see
+	// CancelClosedCleanup.
+	ClosedPulls              ClosedPullRecorder
+	LivePullFetcher          LivePullHeadFetcher
 	VCSClient                vcs.Client `validate:"required"`
 	GithubPullGetter         GithubPullGetter
 	AzureDevopsPullGetter    AzureDevopsPullGetter
@@ -213,6 +219,9 @@ func (c *DefaultCommandRunner) RunAutoplanCommandWithContext(traceCtx context.Co
 		Trigger:      command.AutoTrigger,
 	}
 	if !c.validateCtxAndComment(ctx, command.Autoplan, true) {
+		return
+	}
+	if !c.cancelClosedCleanup(ctx, command.Autoplan) {
 		return
 	}
 	if c.DisableAutoplan {
@@ -542,6 +551,9 @@ func (c *DefaultCommandRunner) RunCommentCommandWithContext(traceCtx context.Con
 	if !c.validateCtxAndComment(ctx, cmd.Name, true) {
 		return
 	}
+	if !c.cancelClosedCleanup(ctx, cmd.Name) {
+		return
+	}
 
 	cmdRunner := buildCommentCommandRunner(c, cmd.CommandName())
 	targetInitiallyIgnored := shouldSkipPreWorkflowHooks(ctx, cmdRunner, cmd)
@@ -715,6 +727,36 @@ func (c *DefaultCommandRunner) fetchUserTeams(logger logging.SimpleLogging, repo
 
 	user.Teams = teams
 	return nil
+}
+
+// cancelClosedCleanup runs CancelClosedCleanup for a command that passed
+// validateCtxAndComment, whose open state may come from a webhook payload
+// older than the pull's close. Unlock runs on closed pulls too, so it leaves
+// the mark. It returns false, and the command must not run, if the pull is
+// still closed or its state can't be confirmed.
+func (c *DefaultCommandRunner) cancelClosedCleanup(ctx *command.Context, commandName command.Name) bool {
+	if commandName == command.Unlock {
+		return true
+	}
+	err := CancelClosedCleanup(ctx.Log, c.ClosedPulls, c.LivePullFetcher, ctx.Pull)
+	if err == nil {
+		return true
+	}
+	var comment string
+	if errors.Is(err, ErrPullClosed) {
+		ctx.Log.Info("not running %s: %s", commandName.String(), err)
+		if commandName == command.Autoplan {
+			return false
+		}
+		comment = "Atlantis commands can't be run on closed pull requests"
+	} else {
+		ctx.Log.Err("not running %s: %s", commandName.String(), err)
+		comment = fmt.Sprintf("**Error:** not running %s: this pull request was closed, and Atlantis couldn't confirm it was reopened: %s. Try again.", commandName.String(), err)
+	}
+	if commentErr := c.VCSClient.CreateComment(ctx.Log, ctx.Pull.BaseRepo, ctx.Pull.Num, comment, ""); commentErr != nil {
+		ctx.Log.Err("unable to comment: %s", commentErr)
+	}
+	return false
 }
 
 func (c *DefaultCommandRunner) validateCtxAndComment(ctx *command.Context, commandName command.Name, shouldComment bool) bool {

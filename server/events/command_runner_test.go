@@ -2844,3 +2844,77 @@ func TestRunAutoplanCommand_DrainNotOngoing(t *testing.T) {
 	projectCommandBuilder.VerifyWasCalledOnce().BuildAutoplanCommands(Any[*command.Context]())
 	Equals(t, 0, drainer.GetStatus().InProgressOps)
 }
+
+// A pull marked closed runs a comment command only once the VCS host shows
+// it was reopened; the command then cancels the pending cleanup, which would
+// otherwise delete the plans and locks it makes.
+func TestRunCommentCommand_CancelsCleanupOfReopenedPull(t *testing.T) {
+	vcsClient := setup(t)
+	marks, live := &fakeClosedMarks{marked: true}, &fakeLivePull{state: models.OpenPullState}
+	ch.ClosedPulls, ch.LivePullFetcher = marks, live
+	var pull github.PullRequest
+	modelPull := models.PullRequest{BaseRepo: testdata.GithubRepo, State: models.OpenPullState, Num: testdata.Pull.Num}
+	When(githubGetter.GetPullRequest(Any[logging.SimpleLogging](), Eq(testdata.GithubRepo), Eq(testdata.Pull.Num))).ThenReturn(&pull, nil)
+	When(eventParsing.ParseGithubPull(Any[logging.SimpleLogging](), Eq(&pull))).ThenReturn(modelPull, modelPull.BaseRepo, testdata.GithubRepo, nil)
+
+	ch.RunCommentCommand(testdata.GithubRepo, nil, nil, testdata.User, testdata.Pull.Num, &events.CommentCommand{Name: command.Plan})
+
+	Assert(t, !marks.marked, "expected the mark cleared")
+	vcsClient.VerifyWasCalledOnce().CreateComment(
+		Any[logging.SimpleLogging](), Eq(testdata.GithubRepo), Eq(modelPull.Num), Eq("Ran Plan for 0 projects:"), Eq("plan"))
+}
+
+// If the pull's state can't be confirmed, the command doesn't run: its plans
+// and locks could be removed under it.
+func TestRunCommentCommand_RefusedWhenReopenCannotBeConfirmed(t *testing.T) {
+	vcsClient := setup(t)
+	marks := &fakeClosedMarks{marked: true}
+	ch.ClosedPulls, ch.LivePullFetcher = marks, &fakeLivePull{err: errors.New("vcs down")}
+	var pull github.PullRequest
+	modelPull := models.PullRequest{BaseRepo: testdata.GithubRepo, State: models.OpenPullState, Num: testdata.Pull.Num}
+	When(githubGetter.GetPullRequest(Any[logging.SimpleLogging](), Eq(testdata.GithubRepo), Eq(testdata.Pull.Num))).ThenReturn(&pull, nil)
+	When(eventParsing.ParseGithubPull(Any[logging.SimpleLogging](), Eq(&pull))).ThenReturn(modelPull, modelPull.BaseRepo, testdata.GithubRepo, nil)
+
+	ch.RunCommentCommand(testdata.GithubRepo, nil, nil, testdata.User, testdata.Pull.Num, &events.CommentCommand{Name: command.Plan})
+
+	Assert(t, marks.marked, "expected the mark kept")
+	vcsClient.VerifyWasCalledOnce().CreateComment(
+		Any[logging.SimpleLogging](), Eq(testdata.GithubRepo), Eq(modelPull.Num),
+		Eq("**Error:** not running plan: this pull request was closed, and Atlantis couldn't confirm it was reopened: fetching the state of the pull request, which is marked closed: vcs down. Try again."), Eq(""))
+	vcsClient.VerifyWasCalled(Never()).CreateComment(
+		Any[logging.SimpleLogging](), Any[models.Repo](), Any[int](), Eq("Ran Plan for 0 projects:"), Any[string]())
+}
+
+// An autoplan event delivered after the pull was closed still shows it open.
+// The live state decides: the autoplan doesn't run and the pending cleanup
+// stays.
+func TestRunAutoplanCommand_DelayedEventKeepsCleanupOfClosedPull(t *testing.T) {
+	vcsClient := setup(t)
+	marks, live := &fakeClosedMarks{marked: true}, &fakeLivePull{state: models.ClosedPullState}
+	ch.ClosedPulls, ch.LivePullFetcher = marks, live
+	stalePull := models.PullRequest{BaseRepo: testdata.GithubRepo, State: models.OpenPullState, Num: testdata.Pull.Num}
+
+	ch.RunAutoplanCommand(testdata.GithubRepo, testdata.GithubRepo, stalePull, testdata.User)
+
+	Equals(t, 1, live.calls)
+	Assert(t, marks.marked, "expected the mark kept")
+	Equals(t, 0, len(marks.cleared))
+	vcsClient.VerifyWasCalled(Never()).CreateComment(
+		Any[logging.SimpleLogging](), Any[models.Repo](), Any[int](), Any[string](), Any[string]())
+}
+
+// Unlock runs on closed pulls too, so it leaves the closed mark.
+func TestRunCommentCommand_UnlockKeepsClosedMark(t *testing.T) {
+	setup(t)
+	marks, live := &fakeClosedMarks{marked: true}, &fakeLivePull{state: models.OpenPullState}
+	ch.ClosedPulls, ch.LivePullFetcher = marks, live
+	var pull github.PullRequest
+	modelPull := models.PullRequest{BaseRepo: testdata.GithubRepo, State: models.ClosedPullState, Num: testdata.Pull.Num}
+	When(githubGetter.GetPullRequest(Any[logging.SimpleLogging](), Eq(testdata.GithubRepo), Eq(testdata.Pull.Num))).ThenReturn(&pull, nil)
+	When(eventParsing.ParseGithubPull(Any[logging.SimpleLogging](), Eq(&pull))).ThenReturn(modelPull, modelPull.BaseRepo, testdata.GithubRepo, nil)
+
+	ch.RunCommentCommand(testdata.GithubRepo, nil, nil, testdata.User, testdata.Pull.Num, &events.CommentCommand{Name: command.Unlock})
+
+	Assert(t, marks.marked, "expected the mark kept")
+	Equals(t, 0, live.calls)
+}

@@ -556,7 +556,8 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 
 	applyLockingClient = locking.NewApplyClient(database, disableApply, disableGlobalApplyLock)
 	cancellationTracker := events.NewCancellationTracker()
-	workingDirLocker := kubeRT.workingDirLocker(events.NewDefaultWorkingDirLocker(), func(repo models.Repo, pullNum int) {
+	localWorkingDirLocker := events.NewDefaultWorkingDirLocker()
+	workingDirLocker := kubeRT.workingDirLocker(localWorkingDirLocker, func(repo models.Repo, pullNum int) {
 		// Stop queued projects and execution groups; the step-level fencing
 		// check stops the current project's remaining steps.
 		cancellationTracker.Cancel(models.PullRequest{Num: pullNum, BaseRepo: repo})
@@ -715,6 +716,14 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		VCSClient:                vcsClient,
 		PlanStore:                planStore,
 	}
+	// The close webhook marks a pull closed before its cleanup, which runs
+	// only while the mark is there; commands clear the mark of a reopened
+	// pull. One recorder for all three keeps them in step.
+	closedPulls, _ := database.(events.ClosedPullRecorder)
+	basePullClosedExecutor.Closed = closedPulls
+	// A pull closed while one of its commands runs is cleaned up when the
+	// pull's last working-dir lock is released.
+	localWorkingDirLocker.SetIdleHook(basePullClosedExecutor.PullIdle)
 	pullClosedExecutor := events.NewInstrumentedPullClosedExecutor(statsScope, logger, basePullClosedExecutor)
 
 	projectFinder := &events.DefaultProjectFinder{}
@@ -1001,6 +1010,8 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 	}
 
 	commandRunner := &events.DefaultCommandRunner{
+		ClosedPulls:                    closedPulls,
+		LivePullFetcher:                livePullHeadFetcher,
 		VCSClient:                      vcsClient,
 		GithubPullGetter:               githubClient,
 		GitlabMergeRequestGetter:       gitlabClient,
@@ -1087,6 +1098,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		PullReqStatusFetcher:            pullReqStatusFetcher,
 		PullStatusFetcher:               database,
 		LivePullHeadFetcher:             livePullHeadFetcher,
+		ClosedPulls:                     closedPulls,
 		SilenceVCSStatusNoProjects:      userConfig.SilenceVCSStatusNoProjects,
 	}
 
@@ -1105,25 +1117,27 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 
 	// Commands and pull cleanup go to the replica that owns the pull.
 	clusterRouter := kubeRT.wire(kubeDeps{
-		CommandRunner:       commandRunner,
-		PullCleaner:         pullClosedExecutor,
-		PullClosedExecutor:  basePullClosedExecutor,
-		VCSClient:           vcsClient,
-		Database:            database,
-		WorkingDir:          workingDir,
-		WorkingDirLocker:    workingDirLocker,
-		JobOutput:           projectCmdOutputHandler,
-		CancellationTracker: cancellationTracker,
-		LocalLogs:           localLogStore,
-		DataDir:             userConfig.DataDir,
-		JobLogDir:           jobLogDir(userConfig),
-		SharedPlans:         externalPlanStore(userConfig, globalCfg),
-		PlanHolderWait:      time.Duration(userConfig.ClusterPlanHolderWaitSeconds) * time.Second,
-		Drainer:             drainer,
+		CommandRunner:         commandRunner,
+		PullCleaner:           pullClosedExecutor,
+		PullClosedExecutor:    basePullClosedExecutor,
+		VCSClient:             vcsClient,
+		Database:              database,
+		WorkingDir:            workingDir,
+		WorkingDirLocker:      workingDirLocker,
+		LocalWorkingDirLocker: localWorkingDirLocker,
+		JobOutput:             projectCmdOutputHandler,
+		CancellationTracker:   cancellationTracker,
+		LocalLogs:             localLogStore,
+		DataDir:               userConfig.DataDir,
+		JobLogDir:             jobLogDir(userConfig),
+		SharedPlans:           externalPlanStore(userConfig, globalCfg),
+		PlanHolderWait:        time.Duration(userConfig.ClusterPlanHolderWaitSeconds) * time.Second,
+		Drainer:               drainer,
 	})
 	eventsController := &events_controllers.VCSEventsController{
 		CommandRunner:                   clusterRouter,
 		PullCleaner:                     clusterRouter,
+		ClosedPulls:                     closedPulls,
 		Parser:                          eventParser,
 		CommentParser:                   commentParser,
 		Logger:                          logger,
