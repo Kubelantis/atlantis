@@ -5,6 +5,7 @@
 package events_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -384,4 +385,49 @@ func TestTryLockSameNamedRepoOnOtherHostSharesTheWorkingDir(t *testing.T) {
 	unlockOther, err := locker.TryLock(gitlab, 1, "default", ".", "", command.Plan, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 	unlockOther()
+}
+
+// An API request releases the project locks its pull gained while it ran, so
+// while it holds the pull only the commands it runs itself lock workspaces.
+// Import, state rm or approve_policies would otherwise take a project lock the
+// request's cleanup releases while they still use it.
+func TestWorkingDirLocker_APIPullLockAdmitsOnlyItsOwnCommands(t *testing.T) {
+	for _, held := range []command.Name{command.Plan, command.Apply} {
+		t.Run(held.String(), func(t *testing.T) {
+			locker := events.NewDefaultWorkingDirLocker()
+			unlockPull, err := locker.TryLockPull(repo, 1, held, events.WorkingDirLockMetadata{API: true})
+			Ok(t, err)
+
+			for _, name := range []command.Name{command.Import, command.State, command.ApprovePolicies, command.Version} {
+				_, err = locker.TryLock(repo, 1, "other", path, projectName, name, events.WorkingDirLockMetadata{})
+				ErrContains(t, fmt.Sprintf("currently locked by %q", held), err)
+			}
+			for _, name := range []command.Name{command.Plan, command.PolicyCheck, command.Apply} {
+				unlockWs, err := locker.TryLock(repo, 1, workspace, path, projectName, name, events.WorkingDirLockMetadata{})
+				Ok(t, err)
+				unlockWs()
+			}
+			// Other pulls are unaffected.
+			unlockOther, err := locker.TryLock(repo, 2, workspace, path, projectName, command.Import, events.WorkingDirLockMetadata{})
+			Ok(t, err)
+			unlockOther()
+
+			unlockPull()
+			unlockWs, err := locker.TryLock(repo, 1, workspace, path, projectName, command.Import, events.WorkingDirLockMetadata{})
+			Ok(t, err)
+			unlockWs()
+		})
+	}
+}
+
+// Comment plan and apply pull locks keep admitting import and state rm on
+// other workspaces.
+func TestWorkingDirLocker_CommentPullLockAdmitsImport(t *testing.T) {
+	locker := events.NewDefaultWorkingDirLocker()
+	unlockPull, err := locker.TryLockPull(repo, 1, command.Plan, events.WorkingDirLockMetadata{})
+	Ok(t, err)
+	defer unlockPull()
+	unlockWs, err := locker.TryLock(repo, 1, "other", path, projectName, command.Import, events.WorkingDirLockMetadata{})
+	Ok(t, err)
+	unlockWs()
 }
