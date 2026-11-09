@@ -162,7 +162,7 @@ func (s *ShellCommandRunner) RunCommandAsync(ctx command.ProjectContext) (chan<-
 		stdin, _ := s.cmd.StdinPipe()
 
 		ctx.Log.Debug("starting '%s' in '%s'", s.describe(), s.workingDir)
-		err := s.cmd.Start()
+		stop, err := StartSupervised(ctx.ExecCtx(), s.cmd)
 		if err != nil {
 			err = fmt.Errorf("running '%s' in '%s': %w", s.describe(), s.workingDir, err)
 			ctx.Log.Err("%s", err.Error())
@@ -232,7 +232,8 @@ func (s *ShellCommandRunner) RunCommandAsync(ctx command.ProjectContext) (chan<-
 		wg.Wait()
 
 		// Wait for the command to complete.
-		err = s.cmd.Wait()
+		err = TimeoutError(ctx.ExecCtx(), s.cmd.Wait())
+		stop()
 
 		dur := time.Since(start)
 		log := ctx.Log.With("duration", dur)

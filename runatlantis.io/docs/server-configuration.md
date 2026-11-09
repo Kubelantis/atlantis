@@ -475,6 +475,34 @@ ATLANTIS_CLUSTER_TOKEN="<secret>"
 
 Shared secret that authenticates calls between replicas; every replica must use the same token. If unset, a random token is generated and a warning is logged, which only suits a single replica: replicas with different tokens cannot forward work to each other. Mount it from a Kubernetes Secret with the `ATLANTIS_CLUSTER_TOKEN` environment variable.
 
+### `--command-timeout-grace-seconds`
+
+```bash
+atlantis server --command-timeout-grace-seconds=300
+# or
+ATLANTIS_COMMAND_TIMEOUT_GRACE_SECONDS=300
+```
+
+Used only if [`--command-timeout-seconds`](#command-timeout-seconds) is set. How many seconds a process interrupted at the timeout has to exit before it is killed, with all the processes it started. Terraform uses this time to stop cleanly, save state and release its state lock, so keep it longer than your slowest provider takes to cancel. Defaults to `300`.
+
+### `--command-timeout-seconds`
+
+```bash
+atlantis server --command-timeout-seconds=7200
+# or
+ATLANTIS_COMMAND_TIMEOUT_SECONDS=7200
+```
+
+Bounds how long a command can run, in seconds: a comment command such as `atlantis plan`, an autoplan, or an API request. Defaults to `0`, no limit.
+
+While a command runs, it holds its pull request: other commands of the pull request, `atlantis unlock`, and the cleanup when the pull request is closed or merged wait for it. A command that never finishes, such as a `terraform` waiting on a provider, holds it until Atlantis restarts. With this flag set, when the time is up:
+
+- the processes the command's workflow steps and workflow hooks run are interrupted with `SIGINT`, and killed if they are still running [`--command-timeout-grace-seconds`](#command-timeout-grace-seconds) later;
+- steps and projects that haven't started are skipped;
+- the command reports `command timed out after <duration>` for the projects it didn't finish, and releases its locks.
+
+Git clones and fetches and policy checks aren't interrupted. Set the timeout well above your longest normal plan or apply: an apply interrupted midway leaves the infrastructure partly changed, as when it is cancelled by hand.
+
 ### `--config` <Badge text="v0.1.3+" type="info"/>
 
 ```bash

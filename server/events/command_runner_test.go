@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/runatlantis/atlantis/server/core/config/valid"
 	"github.com/runatlantis/atlantis/server/core/db"
@@ -2939,4 +2940,42 @@ func TestRunCommentCommand_UnlockKeepsClosedMark(t *testing.T) {
 
 	Assert(t, marks.marked, "expected the mark kept")
 	Equals(t, 0, live.calls)
+}
+
+// With --command-timeout-seconds set, a comment command's processes are
+// bounded: its projects get a context with the deadline, which ends with it.
+func TestRunCommentCommand_SetsCommandDeadline(t *testing.T) {
+	setup(t)
+	ch.CommandTimeout = time.Hour
+	ch.CommandTimeoutGrace = time.Minute
+	var pull github.PullRequest
+	modelPull := models.PullRequest{BaseRepo: testdata.GithubRepo, State: models.OpenPullState, Num: testdata.Pull.Num}
+	When(githubGetter.GetPullRequest(Any[logging.SimpleLogging](), Eq(testdata.GithubRepo), Eq(testdata.Pull.Num))).ThenReturn(&pull, nil)
+	When(eventParsing.ParseGithubPull(Any[logging.SimpleLogging](), Eq(&pull))).ThenReturn(modelPull, modelPull.BaseRepo, testdata.GithubRepo, nil)
+
+	before := time.Now()
+	ch.RunCommentCommand(testdata.GithubRepo, nil, nil, testdata.User, testdata.Pull.Num, &events.CommentCommand{Name: command.Plan})
+
+	ctx, _ := projectCommandBuilder.VerifyWasCalledOnce().BuildPlanCommands(Any[*command.Context](), Any[*events.CommentCommand]()).GetCapturedArguments()
+	deadline, ok := ctx.ExecCtx().Deadline()
+	Assert(t, ok, "expected the command to have a deadline")
+	Assert(t, !deadline.Before(before.Add(time.Hour)), "expected the deadline an hour after the command started, got %s", deadline)
+	Equals(t, time.Minute, command.ExecGrace(ctx.ExecCtx()))
+	// The command has ended, so its deadline no longer stops anything.
+	Ok(t, command.ExecTimeoutError(ctx.ExecCtx()))
+	Assert(t, ctx.ExecCtx().Err() != nil, "expected the deadline freed when the command ended")
+}
+
+// Without --command-timeout-seconds, commands have no deadline.
+func TestRunCommentCommand_NoCommandDeadlineByDefault(t *testing.T) {
+	setup(t)
+	var pull github.PullRequest
+	modelPull := models.PullRequest{BaseRepo: testdata.GithubRepo, State: models.OpenPullState, Num: testdata.Pull.Num}
+	When(githubGetter.GetPullRequest(Any[logging.SimpleLogging](), Eq(testdata.GithubRepo), Eq(testdata.Pull.Num))).ThenReturn(&pull, nil)
+	When(eventParsing.ParseGithubPull(Any[logging.SimpleLogging](), Eq(&pull))).ThenReturn(modelPull, modelPull.BaseRepo, testdata.GithubRepo, nil)
+
+	ch.RunCommentCommand(testdata.GithubRepo, nil, nil, testdata.User, testdata.Pull.Num, &events.CommentCommand{Name: command.Plan})
+
+	ctx, _ := projectCommandBuilder.VerifyWasCalledOnce().BuildPlanCommands(Any[*command.Context](), Any[*events.CommentCommand]()).GetCapturedArguments()
+	Assert(t, !command.HasExecDeadline(ctx.ExecCtx()), "expected no deadline")
 }

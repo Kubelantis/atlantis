@@ -1128,6 +1128,11 @@ func (p *DefaultProjectCommandRunner) runStep(step valid.Step, ctx command.Proje
 	if f, ok := p.WorkingDirLocker.(PullLockFencer); ok && f.LostPullLock(ctx.Pull.BaseRepo, ctx.Pull.Num) {
 		return "", ErrPullLockLost
 	}
+	// Past the command's deadline no step starts, so the remaining steps
+	// and queued projects end at once instead of starting and being stopped.
+	if err := command.ExecTimeoutError(ctx.ExecCtx()); err != nil {
+		return "", err
+	}
 
 	switch step.StepName {
 	case "init":

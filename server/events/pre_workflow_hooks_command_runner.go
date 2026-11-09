@@ -84,6 +84,7 @@ func (w *DefaultPreWorkflowHooksCommandRunner) RunPreHooks(ctx *command.Context,
 			API:                ctx.API,
 			ProjectName:        cmd.ProjectName,
 			SuppressJobOutput:  ctx.SuppressJobOutput,
+			ExecContext:        ctx.ExecContext,
 		},
 		preWorkflowHooks, repoDir, ctx.SuppressVCSStatus)
 

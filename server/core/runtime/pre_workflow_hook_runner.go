@@ -4,12 +4,14 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
+	runtimemodels "github.com/runatlantis/atlantis/server/core/runtime/models"
 	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/runatlantis/atlantis/server/jobs"
 )
@@ -56,7 +58,11 @@ func (wh DefaultPreWorkflowHookRunner) Run(ctx models.WorkflowHookCommandContext
 	}
 
 	cmd.Env = finalEnvVars
-	out, err := cmd.CombinedOutput()
+	execCtx := ctx.ExecContext
+	if execCtx == nil {
+		execCtx = context.Background()
+	}
+	out, err := runtimemodels.CombinedOutputSupervised(execCtx, cmd)
 
 	outString := strings.ReplaceAll(string(out), "\n", "\r\n")
 	if !ctx.SuppressJobOutput {
@@ -65,7 +71,7 @@ func (wh DefaultPreWorkflowHookRunner) Run(ctx models.WorkflowHookCommandContext
 	}
 
 	if err != nil {
-		err = fmt.Errorf("%s: running %q in %q: \n%s", err, shell+" "+shellArgs+" "+command, path, out)
+		err = fmt.Errorf("%w: running %q in %q: \n%s", err, shell+" "+shellArgs+" "+command, path, out)
 		ctx.Log.Debug("error: %s", err)
 		return string(out), "", err
 	}

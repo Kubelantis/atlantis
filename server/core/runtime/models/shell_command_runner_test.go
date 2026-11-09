@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	. "github.com/petergtz/pegomock/v4"
 	"github.com/runatlantis/atlantis/server/core/runtime/models"
@@ -180,4 +181,20 @@ func TestShellCommandRunner_StartFailure(t *testing.T) {
 			Assert(t, strings.Contains(err.Error(), tc.executable), "missing executable context: %v", err)
 		})
 	}
+}
+
+// A step still running at its command's deadline is interrupted; the output
+// so far is kept and the error says it timed out.
+func TestShellCommandRunner_RunStopsAtDeadline(t *testing.T) {
+	execCtx, cancel := command.WithExecDeadline(200*time.Millisecond, time.Minute)
+	defer cancel()
+	ctx := command.ProjectContext{Log: logging.NewNoopLogger(t), ExecContext: execCtx}
+	runner := models.NewShellCommandRunner(nil, "echo started; sleep 30", nil, t.TempDir(), false, nil)
+
+	start := time.Now()
+	out, err := runner.Run(ctx)
+
+	Assert(t, errors.Is(err, command.ErrTimedOut), "expected ErrTimedOut, got %v", err)
+	Equals(t, "started\n", out)
+	Assert(t, time.Since(start) < 10*time.Second, "expected the step to stop at the deadline, took %s", time.Since(start))
 }

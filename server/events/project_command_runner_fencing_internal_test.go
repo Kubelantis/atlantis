@@ -3,6 +3,7 @@ package events
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/runatlantis/atlantis/server/core/config/valid"
 	"github.com/runatlantis/atlantis/server/events/command"
@@ -51,4 +52,23 @@ func TestPullFence(t *testing.T) {
 	Ok(t, fence())
 	locker.lost = true
 	Assert(t, errors.Is(fence(), ErrPullLockLostCleanup), "expected ErrPullLockLostCleanup, got %v", fence())
+}
+
+// Past its command's deadline no step starts: the remaining steps and
+// queued projects end at once with the timeout instead of starting and being
+// interrupted.
+func TestRunStepRefusesAfterCommandDeadline(t *testing.T) {
+	plan := &countingStep{}
+	p := &DefaultProjectCommandRunner{PlanStepRunner: plan, WorkingDirLocker: NewDefaultWorkingDirLocker()}
+	execCtx, cancel := command.WithExecDeadline(20*time.Millisecond, time.Minute)
+	defer cancel()
+	ctx := command.ProjectContext{Pull: models.PullRequest{Num: 1, BaseRepo: models.Repo{FullName: "org/repo"}}, ExecContext: execCtx}
+
+	_, err := p.runStep(valid.Step{StepName: "plan"}, ctx, t.TempDir(), map[string]string{})
+	Ok(t, err)
+
+	<-execCtx.Done()
+	_, err = p.runStep(valid.Step{StepName: "plan"}, ctx, t.TempDir(), map[string]string{})
+	Assert(t, errors.Is(err, command.ErrTimedOut), "expected ErrTimedOut, got %v", err)
+	Equals(t, 1, plan.calls)
 }

@@ -25,8 +25,11 @@ const (
 type ProjectContext struct {
 	// TraceContext carries the active trace span; use Ctx() to read it.
 	TraceContext context.Context
-	CommandName  Name
-	SubCommand   string
+	// ExecContext bounds the processes of the command; see
+	// Context.ExecContext. Use ExecCtx() to read it.
+	ExecContext context.Context
+	CommandName Name
+	SubCommand  string
 	// ApplyCmd is the command that users should run to apply this plan. If
 	// this is an apply then this will be empty.
 	ApplyCmd string

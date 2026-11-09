@@ -407,7 +407,7 @@ func (c *DefaultClient) RunCommandWithVersion(ctx command.ProjectContext, path s
 		return "", err
 	}
 	start := time.Now()
-	out, err := cmd.CombinedOutput()
+	out, err := models.CombinedOutputSupervised(ctx.ExecCtx(), cmd)
 	dur := time.Since(start)
 	log := ctx.Log.With("duration", dur)
 	if err != nil {

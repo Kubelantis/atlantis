@@ -86,6 +86,7 @@ func (w *DefaultPostWorkflowHooksCommandRunner) RunPostHooks(ctx *command.Contex
 			API:                ctx.API,
 			ProjectName:        cmd.ProjectName,
 			SuppressJobOutput:  ctx.SuppressJobOutput,
+			ExecContext:        ctx.ExecContext,
 		},
 		postWorkflowHooks, repoDir, ctx.SuppressVCSStatus)
 

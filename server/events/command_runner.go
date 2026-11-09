@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/drmaxgit/go-azuredevops/azuredevops"
 	"github.com/google/go-github/v88/github"
@@ -111,6 +112,11 @@ func preWorkflowHooksConfigured(runner PreWorkflowHooksCommandRunner, ctx *comma
 
 // DefaultCommandRunner is the first step when processing a comment command.
 type DefaultCommandRunner struct {
+	// CommandTimeout, if positive, bounds how long a command's processes run:
+	// at the deadline they are interrupted, then killed after
+	// CommandTimeoutGrace; see command.WithExecDeadline.
+	CommandTimeout      time.Duration
+	CommandTimeoutGrace time.Duration
 	// ClosedPulls, if set, holds the closed marks of pulls whose cleanup is
 	// due. A command on a pull marked closed runs only if LivePullFetcher
 	// shows the pull was reopened, and then clears the mark; see
@@ -218,6 +224,7 @@ func (c *DefaultCommandRunner) RunAutoplanCommandWithContext(traceCtx context.Co
 		PullStatus:   status,
 		Trigger:      command.AutoTrigger,
 	}
+	defer ctx.SetExecDeadline(c.CommandTimeout, c.CommandTimeoutGrace)()
 	if !c.validateCtxAndComment(ctx, command.Autoplan, true) {
 		return
 	}
@@ -547,6 +554,7 @@ func (c *DefaultCommandRunner) RunCommentCommandWithContext(traceCtx context.Con
 		ClearPolicyApproval:  cmd.ClearPolicyApproval,
 		TeamAllowlistChecker: c.TeamAllowlistChecker,
 	}
+	defer ctx.SetExecDeadline(c.CommandTimeout, c.CommandTimeoutGrace)()
 
 	if !c.validateCtxAndComment(ctx, cmd.Name, true) {
 		return

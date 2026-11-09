@@ -8,6 +8,7 @@
 package models
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -957,6 +958,9 @@ type TeamAllowlistCheckerContext struct {
 // WorkflowHookCommandContext defines the context for a pre and post workflow_hooks that will
 // be executed before workflows.
 type WorkflowHookCommandContext struct {
+	// ExecContext bounds the hook's process; see command.Context.ExecContext.
+	// Nil means no bound.
+	ExecContext context.Context
 	// BaseRepo is the repository that the pull request will be merged into.
 	BaseRepo Repo
 	// The name of the command that is being executed, i.e. 'plan', 'apply' etc.
