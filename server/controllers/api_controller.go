@@ -259,6 +259,26 @@ func (a *APIController) startOp(refuse func(msg string)) (func(), bool) {
 	return a.Drainer.OpDone, true
 }
 
+// errApplyLocked is returned while the global apply lock is held.
+var errApplyLocked = errors.New("apply is disabled globally")
+
+// checkApplyLock reports whether applies are allowed. It fails closed: if the
+// lock can't be checked, applies are refused. It returns the HTTP status to
+// answer with when they are not allowed.
+func (a *APIController) checkApplyLock() (int, error) {
+	if a.ApplyLockChecker == nil {
+		return 0, nil
+	}
+	lock, err := a.ApplyLockChecker.CheckApplyLock()
+	if err != nil {
+		return http.StatusServiceUnavailable, fmt.Errorf("checking global apply lock, which must be reachable to apply: %w", err)
+	}
+	if lock.Locked {
+		return http.StatusLocked, errApplyLocked
+	}
+	return 0, nil
+}
+
 func apiErrorStatusCode(err error) int {
 	if errors.Is(err, events.ErrTeamAllowlistDenied) {
 		return http.StatusForbidden
@@ -346,6 +366,14 @@ func (a *APIController) Apply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer done()
+
+	// The global apply lock covers API applies as it covers comment applies.
+	// Checked before planning, so a refused apply does no work.
+	if code, err := a.checkApplyLock(); err != nil {
+		a.Logger.Warn("refusing API apply for %s: %s", ctx.Pull.BaseRepo.FullName, err)
+		a.apiReportLegacyError(w, code, err)
+		return
+	}
 
 	err = a.apiSetup(ctx, command.Apply)
 	if err != nil {

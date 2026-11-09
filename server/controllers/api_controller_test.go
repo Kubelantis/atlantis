@@ -25,6 +25,7 @@ import (
 	"github.com/runatlantis/atlantis/server/controllers"
 	"github.com/runatlantis/atlantis/server/core/drift"
 	driftmocks "github.com/runatlantis/atlantis/server/core/drift/mocks"
+	"github.com/runatlantis/atlantis/server/core/locking"
 	. "github.com/runatlantis/atlantis/server/core/locking/mocks"
 	"github.com/runatlantis/atlantis/server/events"
 	"github.com/runatlantis/atlantis/server/events/command"
@@ -5461,6 +5462,14 @@ func TestAPIController_RejectsWorkspaceUnsafeForPaths(t *testing.T) {
 	}
 }
 
+// fakeApplyLock reports a fixed global apply lock state.
+type fakeApplyLock struct {
+	lock locking.ApplyCommandLock
+	err  error
+}
+
+func (f fakeApplyLock) CheckApplyLock() (locking.ApplyCommandLock, error) { return f.lock, f.err }
+
 func postAPI(t *testing.T, handler func(http.ResponseWriter, *http.Request)) *httptest.ResponseRecorder {
 	t.Helper()
 	body, _ := json.Marshal(controllers.APIRequest{
@@ -5510,4 +5519,45 @@ func TestAPIController_CommandsRefusedWhileDraining(t *testing.T) {
 		Assert(t, strings.Contains(string(body), "shutting down"), "%s: unexpected body %s", name, body)
 	}
 	projectCommandBuilder.VerifyWasCalled(Never()).BuildPlanCommands(Any[*command.Context](), Any[*events.CommentCommand]())
+}
+
+func postAPIApply(t *testing.T, ac *controllers.APIController) *httptest.ResponseRecorder {
+	t.Helper()
+	return postAPI(t, ac.Apply)
+}
+
+// /api/apply honours the global apply lock, as comment applies do: while it
+// is held nothing is planned or applied.
+func TestAPIController_ApplyRefusedWhileApplyLocked(t *testing.T) {
+	ac, projectCommandBuilder, projectCommandRunner := setup(t)
+	ac.ApplyLockChecker = fakeApplyLock{lock: locking.ApplyCommandLock{Locked: true}}
+
+	w := postAPIApply(t, ac)
+
+	Equals(t, http.StatusLocked, w.Code)
+	responseBody, _ := io.ReadAll(w.Result().Body)
+	Assert(t, strings.Contains(string(responseBody), "apply is disabled globally"), "unexpected body: %s", responseBody)
+	projectCommandBuilder.VerifyWasCalled(Never()).BuildPlanCommands(Any[*command.Context](), Any[*events.CommentCommand]())
+	projectCommandRunner.VerifyWasCalled(Never()).Apply(Any[command.ProjectContext]())
+}
+
+// If the apply lock can't be checked, /api/apply fails closed.
+func TestAPIController_ApplyRefusedWhenApplyLockCheckFails(t *testing.T) {
+	ac, projectCommandBuilder, projectCommandRunner := setup(t)
+	ac.ApplyLockChecker = fakeApplyLock{err: errors.New("lock backend unreachable")}
+
+	w := postAPIApply(t, ac)
+
+	Equals(t, http.StatusServiceUnavailable, w.Code)
+	responseBody, _ := io.ReadAll(w.Result().Body)
+	Assert(t, strings.Contains(string(responseBody), "lock backend unreachable"), "unexpected body: %s", responseBody)
+	projectCommandBuilder.VerifyWasCalled(Never()).BuildPlanCommands(Any[*command.Context](), Any[*events.CommentCommand]())
+	projectCommandRunner.VerifyWasCalled(Never()).Apply(Any[command.ProjectContext]())
+}
+
+func TestAPIController_ApplyRunsWhenApplyNotLocked(t *testing.T) {
+	ac, _, _ := setup(t)
+	ac.ApplyLockChecker = fakeApplyLock{lock: locking.ApplyCommandLock{Locked: false}}
+
+	Equals(t, http.StatusOK, postAPIApply(t, ac).Code)
 }
