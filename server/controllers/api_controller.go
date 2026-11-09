@@ -76,6 +76,10 @@ type APIController struct {
 	// LivePullHeadFetcher is optional for tests. In production it is used for
 	// PR-backed API requests to seed live PR identity data such as base branch.
 	LivePullHeadFetcher events.LivePullHeadFetcher
+	// ClosedPulls, if set, holds the closed marks of pull requests whose
+	// cleanup is pending. A command on a pull request marked closed runs
+	// only if it was reopened; see events.CancelClosedCleanup.
+	ClosedPulls events.ClosedPullRecorder
 	// DriftWebhookSender sends webhook notifications when drift is detected.
 	// Nil when no drift webhooks are configured.
 	DriftWebhookSender *webhooks.DriftWebhookSender
@@ -278,6 +282,12 @@ func (a *APIController) guardPullLocks(ctx *command.Context, cmd command.Name) (
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", errPullBusy, err)
 		}
+		// Under the pull lock, so the cleanup of a pull closed before can't
+		// start while the command runs; it only runs if the pull is closed.
+		if err := events.CancelClosedCleanup(ctx.Log, a.ClosedPulls, a.LivePullHeadFetcher, ctx.Pull); err != nil {
+			unlockPull()
+			return nil, err
+		}
 	}
 	before, err := a.pullLocks(ctx.Pull)
 	if err != nil {
@@ -328,7 +338,7 @@ func (a *APIController) pullLocks(pull models.PullRequest) (map[string]models.Pr
 
 // guardStatusCode is the HTTP status for a guardPullLocks error.
 func guardStatusCode(err error) int {
-	if errors.Is(err, errPullBusy) {
+	if errors.Is(err, errPullBusy) || errors.Is(err, events.ErrPullClosed) {
 		return http.StatusConflict
 	}
 	return http.StatusInternalServerError

@@ -263,6 +263,10 @@ func (b *Client) GetPullRequestIdentity(logger logging.SimpleLogging, repo model
 	}
 	pull.HeadCommit = *pullResp.Source.Commit.Hash
 	pull.BaseBranch = *pullResp.Destination.Branch.Name
+	pull.State = models.ClosedPullState
+	if *pullResp.State == "OPEN" {
+		pull.State = models.OpenPullState
+	}
 	return pull, nil
 }
 

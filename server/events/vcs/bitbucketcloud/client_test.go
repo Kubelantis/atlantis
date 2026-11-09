@@ -267,13 +267,15 @@ func assertBitbucketCloudPullRequestIdentityIncludesBaseBranch(t *testing.T) {
 			Hostname: "bitbucket.org",
 		},
 	}
-	pull := models.PullRequest{Num: 1, BaseRepo: repo}
+	// The state comes from the response, not the stale input.
+	pull := models.PullRequest{Num: 1, BaseRepo: repo, State: models.ClosedPullState}
 
 	identity, err := client.GetPullRequestIdentity(logger, repo, pull)
 
 	Ok(t, err)
 	Equals(t, "75d1e7c57cd9", identity.HeadCommit)
 	Equals(t, "main", identity.BaseBranch)
+	Equals(t, models.OpenPullState, identity.State)
 }
 
 func TestClient_PullIsMergeable(t *testing.T) {

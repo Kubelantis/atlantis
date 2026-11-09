@@ -5602,6 +5602,64 @@ func TestAPIController_PlanHoldsAPIPullLock(t *testing.T) {
 	Assert(t, metadata.API, "expected the pull lock to be held as an API lock")
 }
 
+// apiClosedMarks is a ClosedPullRecorder holding at most one mark.
+type apiClosedMarks struct{ marked bool }
+
+func (m *apiClosedMarks) MarkPullClosed(models.PullRequest) error { m.marked = true; return nil }
+
+func (m *apiClosedMarks) PullMarkedClosed(models.PullRequest) (bool, error) { return m.marked, nil }
+
+func (m *apiClosedMarks) ClearPullClosed(models.PullRequest, time.Time) error {
+	m.marked = false
+	return nil
+}
+
+// apiLivePull returns the pull with a fixed live state.
+type apiLivePull struct{ state models.PullRequestState }
+
+func (l apiLivePull) GetLivePullIdentity(ctx command.ProjectContext) (models.PullRequest, error) {
+	pull := ctx.Pull
+	pull.State = l.state
+	if pull.BaseBranch == "" {
+		pull.BaseBranch = "main"
+	}
+	return pull, nil
+}
+
+// An API command on a pull request marked closed runs only if the pull was
+// reopened, and then cancels the pending cleanup, which would otherwise
+// delete its plans and locks when the command ends.
+func TestAPIController_PlanOnPullMarkedClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		live       models.PullRequestState
+		wantCode   int
+		wantMarked bool
+	}{
+		{"reopened", models.OpenPullState, http.StatusOK, false},
+		{"still closed", models.ClosedPullState, http.StatusConflict, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ac, projectCommandBuilder, _ := setup(t)
+			marks := &apiClosedMarks{marked: true}
+			ac.ClosedPulls = marks
+			ac.LivePullHeadFetcher = apiLivePull{state: tc.live}
+
+			body, _ := json.Marshal(controllers.APIRequest{Repository: "Repo", Ref: "main", Type: "Gitlab", PR: 42, Projects: []string{"default"}})
+			req, _ := http.NewRequest("POST", "", bytes.NewBuffer(body))
+			req.Header.Set(atlantisTokenHeader, atlantisToken)
+			w := httptest.NewRecorder()
+			ac.Plan(w, req)
+
+			Equals(t, tc.wantCode, w.Code)
+			Equals(t, tc.wantMarked, marks.marked)
+			if tc.wantMarked {
+				projectCommandBuilder.VerifyWasCalled(Never()).BuildPlanCommands(Any[*command.Context](), Any[*events.CommentCommand]())
+			}
+		})
+	}
+}
+
 // fakeApplyLock reports a fixed global apply lock state.
 type fakeApplyLock struct {
 	lock locking.ApplyCommandLock
