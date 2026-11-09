@@ -223,6 +223,8 @@ When a project-level error occurs:
 
 Execute [atlantis apply](using-atlantis.md#atlantis-apply) on the specified repository.
 
+Like `atlantis apply`, it honours the global apply lock. While the lock is held, it answers `423 Locked` with `apply is disabled globally`, and nothing is planned or applied. If the lock can't be checked, for example because the Kubernetes API is unreachable, it answers `503 Service Unavailable` and doesn't apply.
+
 #### Parameters
 
 | Name       | Type     | Required | Description                              |

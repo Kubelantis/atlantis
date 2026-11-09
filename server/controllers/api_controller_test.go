@@ -25,6 +25,7 @@ import (
 	"github.com/runatlantis/atlantis/server/controllers"
 	"github.com/runatlantis/atlantis/server/core/drift"
 	driftmocks "github.com/runatlantis/atlantis/server/core/drift/mocks"
+	"github.com/runatlantis/atlantis/server/core/locking"
 	. "github.com/runatlantis/atlantis/server/core/locking/mocks"
 	"github.com/runatlantis/atlantis/server/events"
 	"github.com/runatlantis/atlantis/server/events/command"
@@ -1307,7 +1308,8 @@ func TestAPIController_Apply_PreWorkflowHooksReceiveCorrectCommand(t *testing.T)
 }
 
 func TestAPIController_ListLocks(t *testing.T) {
-	ac, _, _ := setup(t)
+	// The test sets the Locker's List expectation itself.
+	ac, _, _ := setup(t, func(config *apiControllerTestConfig) { config.scriptLocks = func(*MockLocker) {} })
 	lockTime := time.Now()
 	mockLock := models.ProjectLock{
 		Project:   models.Project{ProjectName: "terraform", RepoFullName: "owner/repo", Path: "/path"},
@@ -2165,7 +2167,8 @@ func TestAPIController_ApplyRefreshesStalePullStatusPullAfterAPIPlan(t *testing.
 }
 
 func TestAPIController_ListLocksEmpty(t *testing.T) {
-	ac, _, _ := setup(t)
+	// The test sets the Locker's List expectation itself.
+	ac, _, _ := setup(t, func(config *apiControllerTestConfig) { config.scriptLocks = func(*MockLocker) {} })
 
 	mockLocks := map[string]models.ProjectLock{}
 	ac.Locker.(*MockLocker).EXPECT().List().Return(mockLocks, nil)
@@ -2185,7 +2188,8 @@ func TestAPIController_ListLocksEmpty(t *testing.T) {
 }
 
 func TestAPIController_ListLocksErrorReturnsLegacyShape(t *testing.T) {
-	ac, _, _ := setup(t)
+	// The test sets the Locker's List expectation itself.
+	ac, _, _ := setup(t, func(config *apiControllerTestConfig) { config.scriptLocks = func(*MockLocker) {} })
 	ac.Locker.(*MockLocker).EXPECT().List().Return(nil, errors.New("lock list failed"))
 
 	req, _ := http.NewRequest("GET", "", nil)
@@ -2202,6 +2206,9 @@ func TestAPIController_ListLocksErrorReturnsLegacyShape(t *testing.T) {
 
 type apiControllerTestConfig struct {
 	allowUnlockByPull bool
+	// scriptLocks, if set, sets the Locker's List and UnlockExact
+	// expectations instead of the default of no locks.
+	scriptLocks func(*MockLocker)
 }
 
 func setup(t *testing.T, options ...func(*apiControllerTestConfig)) (*controllers.APIController, *MockProjectCommandBuilder, *MockProjectCommandRunner) {
@@ -2215,6 +2222,12 @@ func setup(t *testing.T, options ...func(*apiControllerTestConfig)) (*controller
 
 	gmockCtrl := gomock.NewController(t)
 	locker := NewMockLocker(gmockCtrl)
+	if config.scriptLocks != nil {
+		config.scriptLocks(locker)
+	} else {
+		// No project locks before or after a command, so it releases none.
+		locker.EXPECT().List().Return(map[string]models.ProjectLock{}, nil).AnyTimes()
+	}
 	if config.allowUnlockByPull {
 		// Allow incidental calls to UnlockByPull (called internally during plan/apply operations)
 		locker.EXPECT().UnlockByPull(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
@@ -2247,6 +2260,8 @@ func setup(t *testing.T, options ...func(*apiControllerTestConfig)) (*controller
 
 	workingDirLocker := NewMockWorkingDirLocker()
 	When(workingDirLocker.TryLock(Any[models.Repo](), Any[int](), Eq(events.DefaultWorkspace), Eq(events.DefaultRepoRelDir), Eq(""), Any[command.Name](), Any[events.WorkingDirLockMetadata]())).
+		ThenReturn(func() {}, nil)
+	When(workingDirLocker.TryLockPull(Any[models.Repo](), Any[int](), Any[command.Name](), Any[events.WorkingDirLockMetadata]())).
 		ThenReturn(func() {}, nil)
 
 	projectCommandBuilder := NewMockProjectCommandBuilder()
@@ -5459,4 +5474,230 @@ func TestAPIController_RejectsWorkspaceUnsafeForPaths(t *testing.T) {
 			projectCommandRunner.VerifyWasCalled(Never()).Plan(Any[command.ProjectContext]())
 		})
 	}
+}
+
+func apiTestPullLock(pull models.PullRequest, path string, at time.Time) models.ProjectLock {
+	return models.ProjectLock{
+		Project:   models.Project{RepoFullName: pull.BaseRepo.FullName, Path: path},
+		Workspace: events.DefaultWorkspace,
+		Pull:      pull,
+		Time:      at,
+	}
+}
+
+// An API command releases only the project locks it took. A lock the pull
+// already held, such as a comment plan waiting for apply, and another pull's
+// lock stay.
+func TestAPIController_PlanReleasesOnlyItsOwnLocks(t *testing.T) {
+	repo := models.Repo{FullName: "Repo", VCSHost: models.VCSHost{Hostname: testVCSHostname(models.Gitlab), Type: models.Gitlab}}
+	pull := models.PullRequest{Num: 42, BaseRepo: repo}
+	earlier := apiTestPullLock(pull, "earlier", time.Unix(100, 0))
+	taken := apiTestPullLock(pull, "taken", time.Unix(200, 0))
+	other := apiTestPullLock(models.PullRequest{Num: 7, BaseRepo: repo}, "other", time.Unix(200, 0))
+	ac, _, _ := setup(t, func(config *apiControllerTestConfig) {
+		config.scriptLocks = func(locker *MockLocker) {
+			gomock.InOrder(
+				locker.EXPECT().List().Return(map[string]models.ProjectLock{"earlier": earlier}, nil),
+				locker.EXPECT().List().Return(map[string]models.ProjectLock{"earlier": earlier, "taken": taken, "other": other}, nil),
+			)
+			locker.EXPECT().UnlockExact(taken).Return(&taken, nil)
+		}
+	})
+
+	body, _ := json.Marshal(controllers.APIRequest{Repository: "Repo", Ref: "main", Type: "Gitlab", PR: 42, Projects: []string{"default"}})
+	req, _ := http.NewRequest("POST", "", bytes.NewBuffer(body))
+	req.Header.Set(atlantisTokenHeader, atlantisToken)
+	w := httptest.NewRecorder()
+	ac.Plan(w, req)
+	Equals(t, http.StatusOK, w.Code)
+}
+
+// lostLeaseLocker reports the pull's lease lost from the lostFrom-th
+// LostPullLock call on (0 is the first).
+type lostLeaseLocker struct {
+	events.WorkingDirLocker
+	lostFrom int
+	calls    int
+}
+
+func (l *lostLeaseLocker) LostPullLock(models.Repo, int) bool {
+	l.calls++
+	return l.calls > l.lostFrom
+}
+
+// Once this replica loses the pull's lease, another replica may own the pull
+// and take its project locks, which look new to the command's snapshot. The
+// command then releases nothing, whether the lease was lost before its
+// cleanup or between listing the locks and releasing one.
+func TestAPIController_PlanKeepsLocksAfterLosingPullLease(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		lostFrom int
+		lists    int
+	}{
+		{"lost before cleanup", 0, 1},
+		{"lost during cleanup", 1, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := models.Repo{FullName: "Repo", VCSHost: models.VCSHost{Hostname: testVCSHostname(models.Gitlab), Type: models.Gitlab}}
+			pull := models.PullRequest{Num: 42, BaseRepo: repo}
+			newOwners := apiTestPullLock(pull, "taken", time.Unix(200, 0))
+			ac, _, _ := setup(t, func(config *apiControllerTestConfig) {
+				config.scriptLocks = func(locker *MockLocker) {
+					calls := []any{locker.EXPECT().List().Return(map[string]models.ProjectLock{}, nil)}
+					if tc.lists > 1 {
+						calls = append(calls, locker.EXPECT().List().Return(map[string]models.ProjectLock{"taken": newOwners}, nil))
+					}
+					gomock.InOrder(calls...)
+					locker.EXPECT().UnlockExact(gomock.Any()).Times(0)
+				}
+			})
+			fencer := &lostLeaseLocker{WorkingDirLocker: ac.WorkingDirLocker, lostFrom: tc.lostFrom}
+			ac.WorkingDirLocker = fencer
+
+			body, _ := json.Marshal(controllers.APIRequest{Repository: "Repo", Ref: "main", Type: "Gitlab", PR: 42, Projects: []string{"default"}})
+			req, _ := http.NewRequest("POST", "", bytes.NewBuffer(body))
+			req.Header.Set(atlantisTokenHeader, atlantisToken)
+			w := httptest.NewRecorder()
+			ac.Plan(w, req)
+			Assert(t, fencer.calls > tc.lostFrom, "expected the lease to be checked")
+		})
+	}
+}
+
+// An API command on a pull request holds the pull's lock, so it doesn't run
+// beside a comment command of the same pull.
+func TestAPIController_PlanRefusedWhilePullBusy(t *testing.T) {
+	ac, projectCommandBuilder, _ := setup(t)
+	workingDirLocker := ac.WorkingDirLocker.(*MockWorkingDirLocker)
+	When(workingDirLocker.TryLockPull(Any[models.Repo](), Eq(42), Any[command.Name](), Any[events.WorkingDirLockMetadata]())).
+		ThenReturn(func() {}, errors.New("pull request 42 is currently locked by \"apply\""))
+
+	body, _ := json.Marshal(controllers.APIRequest{Repository: "Repo", Ref: "main", Type: "Gitlab", PR: 42, Projects: []string{"default"}})
+	req, _ := http.NewRequest("POST", "", bytes.NewBuffer(body))
+	req.Header.Set(atlantisTokenHeader, atlantisToken)
+	w := httptest.NewRecorder()
+	ac.Plan(w, req)
+
+	Equals(t, http.StatusConflict, w.Code)
+	projectCommandBuilder.VerifyWasCalled(Never()).BuildPlanCommands(Any[*command.Context](), Any[*events.CommentCommand]())
+}
+
+// The API holds its pull lock as an API lock, so import, state rm and other
+// commands it doesn't run can't take project locks its cleanup would release.
+func TestAPIController_PlanHoldsAPIPullLock(t *testing.T) {
+	ac, _, _ := setup(t)
+	workingDirLocker := ac.WorkingDirLocker.(*MockWorkingDirLocker)
+
+	body, _ := json.Marshal(controllers.APIRequest{Repository: "Repo", Ref: "main", Type: "Gitlab", PR: 42, Projects: []string{"default"}})
+	req, _ := http.NewRequest("POST", "", bytes.NewBuffer(body))
+	req.Header.Set(atlantisTokenHeader, atlantisToken)
+	w := httptest.NewRecorder()
+	ac.Plan(w, req)
+
+	Equals(t, http.StatusOK, w.Code)
+	_, pullNum, cmdName, metadata := workingDirLocker.VerifyWasCalledOnce().TryLockPull(Any[models.Repo](), Any[int](), Any[command.Name](), Any[events.WorkingDirLockMetadata]()).GetCapturedArguments()
+	Equals(t, 42, pullNum)
+	Equals(t, command.Plan, cmdName)
+	Assert(t, metadata.API, "expected the pull lock to be held as an API lock")
+}
+
+// fakeApplyLock reports a fixed global apply lock state.
+type fakeApplyLock struct {
+	lock locking.ApplyCommandLock
+	err  error
+}
+
+func (f fakeApplyLock) CheckApplyLock() (locking.ApplyCommandLock, error) { return f.lock, f.err }
+
+func postAPI(t *testing.T, handler func(http.ResponseWriter, *http.Request)) *httptest.ResponseRecorder {
+	t.Helper()
+	body, _ := json.Marshal(controllers.APIRequest{
+		Repository: "Repo",
+		Ref:        "main",
+		Type:       "Gitlab",
+		Projects:   []string{"default"},
+	})
+	req, _ := http.NewRequest("POST", "", bytes.NewBuffer(body))
+	req.Header.Set(atlantisTokenHeader, atlantisToken)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	return w
+}
+
+// API commands are tracked by the shutdown drain, so shutdown waits for them.
+func TestAPIController_ApplyIsTrackedByDrain(t *testing.T) {
+	ac, _, projectCommandRunner := setup(t)
+	drainer := &events.Drainer{}
+	ac.Drainer = drainer
+	var opsDuringApply int
+	When(projectCommandRunner.Apply(Any[command.ProjectContext]())).
+		Then(func([]Param) ReturnValues {
+			opsDuringApply = drainer.GetStatus().InProgressOps
+			return ReturnValues{command.ProjectCommandOutput{ApplySuccess: "success"}}
+		})
+
+	Equals(t, http.StatusOK, postAPI(t, ac.Apply).Code)
+	Equals(t, 1, opsDuringApply)
+	Equals(t, 0, drainer.GetStatus().InProgressOps)
+}
+
+// Once draining has begun, API commands are refused instead of starting work
+// that shutdown won't wait for.
+func TestAPIController_CommandsRefusedWhileDraining(t *testing.T) {
+	ac, projectCommandBuilder, _ := setup(t)
+	drainer := &events.Drainer{}
+	drainer.ShutdownBlocking()
+	ac.Drainer = drainer
+
+	for name, handler := range map[string]func(http.ResponseWriter, *http.Request){
+		"plan": ac.Plan, "apply": ac.Apply,
+	} {
+		w := postAPI(t, handler)
+		Equals(t, http.StatusServiceUnavailable, w.Code)
+		body, _ := io.ReadAll(w.Result().Body)
+		Assert(t, strings.Contains(string(body), "shutting down"), "%s: unexpected body %s", name, body)
+	}
+	projectCommandBuilder.VerifyWasCalled(Never()).BuildPlanCommands(Any[*command.Context](), Any[*events.CommentCommand]())
+}
+
+func postAPIApply(t *testing.T, ac *controllers.APIController) *httptest.ResponseRecorder {
+	t.Helper()
+	return postAPI(t, ac.Apply)
+}
+
+// /api/apply honours the global apply lock, as comment applies do: while it
+// is held nothing is planned or applied.
+func TestAPIController_ApplyRefusedWhileApplyLocked(t *testing.T) {
+	ac, projectCommandBuilder, projectCommandRunner := setup(t)
+	ac.ApplyLockChecker = fakeApplyLock{lock: locking.ApplyCommandLock{Locked: true}}
+
+	w := postAPIApply(t, ac)
+
+	Equals(t, http.StatusLocked, w.Code)
+	responseBody, _ := io.ReadAll(w.Result().Body)
+	Assert(t, strings.Contains(string(responseBody), "apply is disabled globally"), "unexpected body: %s", responseBody)
+	projectCommandBuilder.VerifyWasCalled(Never()).BuildPlanCommands(Any[*command.Context](), Any[*events.CommentCommand]())
+	projectCommandRunner.VerifyWasCalled(Never()).Apply(Any[command.ProjectContext]())
+}
+
+// If the apply lock can't be checked, /api/apply fails closed.
+func TestAPIController_ApplyRefusedWhenApplyLockCheckFails(t *testing.T) {
+	ac, projectCommandBuilder, projectCommandRunner := setup(t)
+	ac.ApplyLockChecker = fakeApplyLock{err: errors.New("lock backend unreachable")}
+
+	w := postAPIApply(t, ac)
+
+	Equals(t, http.StatusServiceUnavailable, w.Code)
+	responseBody, _ := io.ReadAll(w.Result().Body)
+	Assert(t, strings.Contains(string(responseBody), "lock backend unreachable"), "unexpected body: %s", responseBody)
+	projectCommandBuilder.VerifyWasCalled(Never()).BuildPlanCommands(Any[*command.Context](), Any[*events.CommentCommand]())
+	projectCommandRunner.VerifyWasCalled(Never()).Apply(Any[command.ProjectContext]())
+}
+
+func TestAPIController_ApplyRunsWhenApplyNotLocked(t *testing.T) {
+	ac, _, _ := setup(t)
+	ac.ApplyLockChecker = fakeApplyLock{lock: locking.ApplyCommandLock{Locked: false}}
+
+	Equals(t, http.StatusOK, postAPIApply(t, ac).Code)
 }

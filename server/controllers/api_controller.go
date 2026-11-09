@@ -40,11 +40,14 @@ const atlantisTokenHeader = "X-Atlantis-Token"
 var nonPRPullCounter atomic.Int64
 
 type APIController struct {
-	APISecret                       []byte
-	Locker                          locking.Locker `validate:"required"`
-	DriftStorage                    drift.Storage
-	RemediationService              drift.RemediationService
-	ApplyLockChecker                locking.ApplyLockChecker
+	APISecret          []byte
+	Locker             locking.Locker `validate:"required"`
+	DriftStorage       drift.Storage
+	RemediationService drift.RemediationService
+	ApplyLockChecker   locking.ApplyLockChecker
+	// Drainer tracks API commands so shutdown waits for them; nil disables
+	// tracking.
+	Drainer                         *events.Drainer
 	EnableDriftRemediation          bool
 	Logger                          logging.SimpleLogging           `validate:"required"`
 	Parser                          events.EventParsing             `validate:"required"`
@@ -242,6 +245,129 @@ func normalizeAPIBranchRef(ref string) string {
 	return models.NormalizeAPIRef(ref)
 }
 
+// lostPullLock reports whether this replica lost ctx's pull lease while the
+// API command ran. Another replica may own the pull since and have taken
+// project locks of it, which the command's snapshot can't tell from its own,
+// so the command releases none: they stay for the new owner, or for unlock.
+func (a *APIController) lostPullLock(ctx *command.Context) bool {
+	f, ok := a.WorkingDirLocker.(events.PullLockFencer)
+	if !ok || ctx.Pull.Num <= 0 || !f.LostPullLock(ctx.Pull.BaseRepo, ctx.Pull.Num) {
+		return false
+	}
+	ctx.Log.Warn("not releasing the project locks of this API command: this replica lost the lock of pull request %d to another replica", ctx.Pull.Num)
+	return true
+}
+
+// errPullBusy is returned when another command of the pull request is
+// running.
+var errPullBusy = errors.New("another command of this pull request is running")
+
+// guardPullLocks begins an API command on ctx's pull. On a pull request it
+// holds the pull's working-dir lock as an API lock, so no other command of
+// that pull, such as a comment command, import or state rm, starts beside it.
+// It returns a func, to call when the command ends, that releases
+// the project locks the command took, and only those: locks the pull already
+// held, such as a comment plan waiting for apply, stay.
+func (a *APIController) guardPullLocks(ctx *command.Context, cmd command.Name) (func(), error) {
+	unlockPull := func() {}
+	if ctx.Pull.Num > 0 {
+		metadata := events.WorkingDirLockMetadataForPull(ctx.Pull)
+		metadata.API = true
+		var err error
+		unlockPull, err = a.WorkingDirLocker.TryLockPull(ctx.Pull.BaseRepo, ctx.Pull.Num, cmd, metadata)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", errPullBusy, err)
+		}
+	}
+	before, err := a.pullLocks(ctx.Pull)
+	if err != nil {
+		unlockPull()
+		return nil, err
+	}
+	release := func() {
+		defer unlockPull()
+		if a.lostPullLock(ctx) {
+			return
+		}
+		after, err := a.pullLocks(ctx.Pull)
+		if err != nil {
+			ctx.Log.Err("not releasing the project locks of this API command: %s", err)
+			return
+		}
+		for key, lock := range after {
+			if prev, ok := before[key]; ok && prev.Time.Equal(lock.Time) {
+				continue
+			}
+			// Checked before each release: a lock taken after the lease was
+			// lost belongs to the pull's new owner.
+			if a.lostPullLock(ctx) {
+				return
+			}
+			if _, err := a.Locker.UnlockExact(lock); err != nil {
+				ctx.Log.Err("releasing project lock %q: %s", key, err)
+			}
+		}
+	}
+	return release, nil
+}
+
+// pullLocks returns the project locks held by pull.
+func (a *APIController) pullLocks(pull models.PullRequest) (map[string]models.ProjectLock, error) {
+	all, err := a.Locker.List()
+	if err != nil {
+		return nil, fmt.Errorf("listing project locks: %w", err)
+	}
+	held := map[string]models.ProjectLock{}
+	for key, lock := range all {
+		if lock.Pull.SameAs(pull) {
+			held[key] = lock
+		}
+	}
+	return held, nil
+}
+
+// guardStatusCode is the HTTP status for a guardPullLocks error.
+func guardStatusCode(err error) int {
+	if errors.Is(err, errPullBusy) {
+		return http.StatusConflict
+	}
+	return http.StatusInternalServerError
+}
+
+// startOp registers an API command with the shutdown drain, so shutdown waits
+// for it, and returns the func that ends it. Once Atlantis is shutting down it
+// refuses the command through refuse and returns false.
+func (a *APIController) startOp(refuse func(msg string)) (func(), bool) {
+	if a.Drainer == nil {
+		return func() {}, true
+	}
+	if !a.Drainer.StartOp() {
+		refuse("Atlantis is shutting down; try again on another replica")
+		return nil, false
+	}
+	return a.Drainer.OpDone, true
+}
+
+// errApplyLocked is returned while the global apply lock is held.
+var errApplyLocked = errors.New("apply is disabled globally")
+
+// checkApplyLock reports whether applies are allowed. It fails closed: if the
+// lock can't be checked, applies are refused. It returns the HTTP status to
+// answer with when they are not allowed.
+func (a *APIController) checkApplyLock() (int, error) {
+	if a.ApplyLockChecker == nil {
+		return 0, nil
+	}
+	lock, err := a.ApplyLockChecker.CheckApplyLock()
+	if err != nil {
+		return http.StatusServiceUnavailable, fmt.Errorf("checking global apply lock, which must be reachable to apply: %w", err)
+	}
+	if lock.Locked {
+		return http.StatusLocked, errApplyLocked
+	}
+	return 0, nil
+}
+
 func apiErrorStatusCode(err error) int {
 	if errors.Is(err, events.ErrTeamAllowlistDenied) {
 		return http.StatusForbidden
@@ -286,6 +412,18 @@ func (a *APIController) Plan(w http.ResponseWriter, r *http.Request) {
 		a.apiReportLegacyError(w, code, err)
 		return
 	}
+	done, ok := a.startOp(func(msg string) { a.apiReportLegacyError(w, http.StatusServiceUnavailable, errors.New(msg)) })
+	if !ok {
+		return
+	}
+	defer done()
+
+	endLocks, err := a.guardPullLocks(ctx, command.Plan)
+	if err != nil {
+		a.apiReportLegacyError(w, guardStatusCode(err), err)
+		return
+	}
+	defer endLocks()
 
 	err = a.apiSetup(ctx, command.Plan)
 	if err != nil {
@@ -298,9 +436,6 @@ func (a *APIController) Plan(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		a.apiReportLegacyError(w, apiErrorStatusCode(err), err)
 		return
-	}
-	if !ctx.CommandSkipped {
-		defer a.Locker.UnlockByPull(ctx.Pull.BaseRepo, ctx.Pull.Num) // nolint: errcheck
 	}
 
 	statusCode := http.StatusOK
@@ -319,6 +454,26 @@ func (a *APIController) Apply(w http.ResponseWriter, r *http.Request) {
 		a.apiReportLegacyError(w, code, err)
 		return
 	}
+	done, ok := a.startOp(func(msg string) { a.apiReportLegacyError(w, http.StatusServiceUnavailable, errors.New(msg)) })
+	if !ok {
+		return
+	}
+	defer done()
+
+	// The global apply lock covers API applies as it covers comment applies.
+	// Checked before planning, so a refused apply does no work.
+	if code, err := a.checkApplyLock(); err != nil {
+		a.Logger.Warn("refusing API apply for %s: %s", ctx.Pull.BaseRepo.FullName, err)
+		a.apiReportLegacyError(w, code, err)
+		return
+	}
+
+	endLocks, err := a.guardPullLocks(ctx, command.Apply)
+	if err != nil {
+		a.apiReportLegacyError(w, guardStatusCode(err), err)
+		return
+	}
+	defer endLocks()
 
 	err = a.apiSetup(ctx, command.Apply)
 	if err != nil {
@@ -337,7 +492,6 @@ func (a *APIController) Apply(w http.ResponseWriter, r *http.Request) {
 		responder.writeJSON(w, http.StatusOK, result)
 		return
 	}
-	defer a.Locker.UnlockByPull(ctx.Pull.BaseRepo, ctx.Pull.Num) // nolint: errcheck
 
 	// The API apply endpoint runs plan first. Refresh PR status afterward so
 	// apply requirements evaluate the VCS state the plan phase just produced.
@@ -1140,6 +1294,12 @@ func (a *APIController) Remediate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	done, ok := a.startOp(func(msg string) { responder.ServiceUnavailable(w, r, msg) })
+	if !ok {
+		return
+	}
+	defer done()
+
 	// Parse the JSON payload
 	bytes, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -1300,12 +1460,17 @@ func (e *apiRemediationExecutor) ExecutePlan(repository, ref, vcsType, projectNa
 	}
 	ctx.PreWorkflowHooksAlreadyRun = true
 
+	endLocks, err := e.controller.guardPullLocks(ctx, command.Plan)
+	if err != nil {
+		return "", nil, err
+	}
+	defer endLocks()
+
 	// Execute plan
 	result, err := e.controller.apiPlan(request, ctx)
 	if err != nil {
 		return "", nil, err
 	}
-	defer e.controller.Locker.UnlockByPull(ctx.Pull.BaseRepo, ctx.Pull.Num) // nolint: errcheck
 
 	output, driftSummary := planRemediationOutput(result)
 
@@ -1381,11 +1546,16 @@ func (e *apiRemediationExecutor) ExecuteApplyProjects(repository, ref, vcsType s
 	}
 	ctx.PreWorkflowHooksAlreadyRun = true
 
+	endLocks, err := e.controller.guardPullLocks(ctx, command.Apply)
+	if err != nil {
+		return nil, err
+	}
+	defer endLocks()
+
 	planResult, err := e.controller.apiPlan(request, ctx)
 	if err != nil {
 		return nil, fmt.Errorf("plan failed: %w", err)
 	}
-	defer e.controller.Locker.UnlockByPull(ctx.Pull.BaseRepo, ctx.Pull.Num) // nolint: errcheck
 
 	remediationResults := projectRemediationResultsFromPlan(projects, planResult)
 	if planResult.HasErrors() {
@@ -1475,12 +1645,17 @@ func (e *apiRemediationExecutor) ExecuteApply(repository, ref, vcsType, projectN
 	}
 	ctx.PreWorkflowHooksAlreadyRun = true
 
+	endLocks, err := e.controller.guardPullLocks(ctx, command.Apply)
+	if err != nil {
+		return "", err
+	}
+	defer endLocks()
+
 	// First run plan (required before apply)
 	planResult, err := e.controller.apiPlan(request, ctx)
 	if err != nil {
 		return "", fmt.Errorf("plan failed: %w", err)
 	}
-	defer e.controller.Locker.UnlockByPull(ctx.Pull.BaseRepo, ctx.Pull.Num) // nolint: errcheck
 	if planResult.HasErrors() {
 		output, _ := planRemediationOutput(planResult)
 		return output.String(), fmt.Errorf("plan had errors")
@@ -2093,6 +2268,12 @@ func (a *APIController) DetectDrift(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	done, ok := a.startOp(func(msg string) { responder.ServiceUnavailable(w, r, msg) })
+	if !ok {
+		return
+	}
+	defer done()
+
 	// Parse the JSON payload
 	bytes, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -2210,6 +2391,13 @@ func (a *APIController) DetectDrift(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx.PreWorkflowHooksAlreadyRun = true
 
+	endLocks, err := a.guardPullLocks(ctx, command.Plan)
+	if err != nil {
+		responder.InternalError(w, r, err)
+		return
+	}
+	defer endLocks()
+
 	result, err := a.apiPlan(apiRequest, ctx)
 	if err != nil {
 		if errors.Is(err, events.ErrTeamAllowlistDenied) {
@@ -2219,7 +2407,6 @@ func (a *APIController) DetectDrift(w http.ResponseWriter, r *http.Request) {
 		responder.InternalError(w, r, err)
 		return
 	}
-	defer a.Locker.UnlockByPull(ctx.Pull.BaseRepo, ctx.Pull.Num) // nolint: errcheck
 
 	// Process results and store drift data
 	detectionResult := models.NewDriftDetectionResult(request.Repository)
