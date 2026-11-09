@@ -329,6 +329,8 @@ to be allowed to set this key. See [Server-Side Repo Config Use Cases](server-si
 
 ```yaml
 version: 3
+parallel_plan: true
+parallel_apply: true
 abort_on_execution_order_fail: true
 projects:
    - dir: project1
@@ -344,6 +346,11 @@ in each group one by one.
 
 If any plan/apply fails and `abort_on_execution_order_fail` is set to true on a repo level, all the
 following groups will be aborted. For this example, if project2 fails then project1 will not run.
+
+The abort applies only when the command runs in parallel: `parallel_plan` for plans, `parallel_apply`
+for applies. Without them, the groups still run in order, but a failed group doesn't stop the
+following ones. Through the API, only drift remediation aborts on a failed group; `/api/plan` and
+`/api/apply` run every group.
 
 Execution order groups are useful when you have dependencies between projects. However, they are only applicable in the case where
 you initiate a global apply for all of your projects, i.e `atlantis apply`. If you initiate an apply on a single project, then the execution order groups are ignored.
