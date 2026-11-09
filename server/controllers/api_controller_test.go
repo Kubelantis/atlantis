@@ -25,6 +25,7 @@ import (
 	"github.com/runatlantis/atlantis/server/controllers"
 	"github.com/runatlantis/atlantis/server/core/drift"
 	driftmocks "github.com/runatlantis/atlantis/server/core/drift/mocks"
+	"github.com/runatlantis/atlantis/server/core/locking"
 	. "github.com/runatlantis/atlantis/server/core/locking/mocks"
 	"github.com/runatlantis/atlantis/server/events"
 	"github.com/runatlantis/atlantis/server/events/command"
@@ -5527,4 +5528,104 @@ func TestAPIController_PlanRefusedWhilePullBusy(t *testing.T) {
 
 	Equals(t, http.StatusConflict, w.Code)
 	projectCommandBuilder.VerifyWasCalled(Never()).BuildPlanCommands(Any[*command.Context](), Any[*events.CommentCommand]())
+}
+
+// fakeApplyLock reports a fixed global apply lock state.
+type fakeApplyLock struct {
+	lock locking.ApplyCommandLock
+	err  error
+}
+
+func (f fakeApplyLock) CheckApplyLock() (locking.ApplyCommandLock, error) { return f.lock, f.err }
+
+func postAPI(t *testing.T, handler func(http.ResponseWriter, *http.Request)) *httptest.ResponseRecorder {
+	t.Helper()
+	body, _ := json.Marshal(controllers.APIRequest{
+		Repository: "Repo",
+		Ref:        "main",
+		Type:       "Gitlab",
+		Projects:   []string{"default"},
+	})
+	req, _ := http.NewRequest("POST", "", bytes.NewBuffer(body))
+	req.Header.Set(atlantisTokenHeader, atlantisToken)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	return w
+}
+
+// API commands are tracked by the shutdown drain, so shutdown waits for them.
+func TestAPIController_ApplyIsTrackedByDrain(t *testing.T) {
+	ac, _, projectCommandRunner := setup(t)
+	drainer := &events.Drainer{}
+	ac.Drainer = drainer
+	var opsDuringApply int
+	When(projectCommandRunner.Apply(Any[command.ProjectContext]())).
+		Then(func([]Param) ReturnValues {
+			opsDuringApply = drainer.GetStatus().InProgressOps
+			return ReturnValues{command.ProjectCommandOutput{ApplySuccess: "success"}}
+		})
+
+	Equals(t, http.StatusOK, postAPI(t, ac.Apply).Code)
+	Equals(t, 1, opsDuringApply)
+	Equals(t, 0, drainer.GetStatus().InProgressOps)
+}
+
+// Once draining has begun, API commands are refused instead of starting work
+// that shutdown won't wait for.
+func TestAPIController_CommandsRefusedWhileDraining(t *testing.T) {
+	ac, projectCommandBuilder, _ := setup(t)
+	drainer := &events.Drainer{}
+	drainer.ShutdownBlocking()
+	ac.Drainer = drainer
+
+	for name, handler := range map[string]func(http.ResponseWriter, *http.Request){
+		"plan": ac.Plan, "apply": ac.Apply,
+	} {
+		w := postAPI(t, handler)
+		Equals(t, http.StatusServiceUnavailable, w.Code)
+		body, _ := io.ReadAll(w.Result().Body)
+		Assert(t, strings.Contains(string(body), "shutting down"), "%s: unexpected body %s", name, body)
+	}
+	projectCommandBuilder.VerifyWasCalled(Never()).BuildPlanCommands(Any[*command.Context](), Any[*events.CommentCommand]())
+}
+
+func postAPIApply(t *testing.T, ac *controllers.APIController) *httptest.ResponseRecorder {
+	t.Helper()
+	return postAPI(t, ac.Apply)
+}
+
+// /api/apply honours the global apply lock, as comment applies do: while it
+// is held nothing is planned or applied.
+func TestAPIController_ApplyRefusedWhileApplyLocked(t *testing.T) {
+	ac, projectCommandBuilder, projectCommandRunner := setup(t)
+	ac.ApplyLockChecker = fakeApplyLock{lock: locking.ApplyCommandLock{Locked: true}}
+
+	w := postAPIApply(t, ac)
+
+	Equals(t, http.StatusLocked, w.Code)
+	responseBody, _ := io.ReadAll(w.Result().Body)
+	Assert(t, strings.Contains(string(responseBody), "apply is disabled globally"), "unexpected body: %s", responseBody)
+	projectCommandBuilder.VerifyWasCalled(Never()).BuildPlanCommands(Any[*command.Context](), Any[*events.CommentCommand]())
+	projectCommandRunner.VerifyWasCalled(Never()).Apply(Any[command.ProjectContext]())
+}
+
+// If the apply lock can't be checked, /api/apply fails closed.
+func TestAPIController_ApplyRefusedWhenApplyLockCheckFails(t *testing.T) {
+	ac, projectCommandBuilder, projectCommandRunner := setup(t)
+	ac.ApplyLockChecker = fakeApplyLock{err: errors.New("lock backend unreachable")}
+
+	w := postAPIApply(t, ac)
+
+	Equals(t, http.StatusServiceUnavailable, w.Code)
+	responseBody, _ := io.ReadAll(w.Result().Body)
+	Assert(t, strings.Contains(string(responseBody), "lock backend unreachable"), "unexpected body: %s", responseBody)
+	projectCommandBuilder.VerifyWasCalled(Never()).BuildPlanCommands(Any[*command.Context](), Any[*events.CommentCommand]())
+	projectCommandRunner.VerifyWasCalled(Never()).Apply(Any[command.ProjectContext]())
+}
+
+func TestAPIController_ApplyRunsWhenApplyNotLocked(t *testing.T) {
+	ac, _, _ := setup(t)
+	ac.ApplyLockChecker = fakeApplyLock{lock: locking.ApplyCommandLock{Locked: false}}
+
+	Equals(t, http.StatusOK, postAPIApply(t, ac).Code)
 }

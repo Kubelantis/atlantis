@@ -40,11 +40,14 @@ const atlantisTokenHeader = "X-Atlantis-Token"
 var nonPRPullCounter atomic.Int64
 
 type APIController struct {
-	APISecret                       []byte
-	Locker                          locking.Locker `validate:"required"`
-	DriftStorage                    drift.Storage
-	RemediationService              drift.RemediationService
-	ApplyLockChecker                locking.ApplyLockChecker
+	APISecret          []byte
+	Locker             locking.Locker `validate:"required"`
+	DriftStorage       drift.Storage
+	RemediationService drift.RemediationService
+	ApplyLockChecker   locking.ApplyLockChecker
+	// Drainer tracks API commands so shutdown waits for them; nil disables
+	// tracking.
+	Drainer                         *events.Drainer
 	EnableDriftRemediation          bool
 	Logger                          logging.SimpleLogging           `validate:"required"`
 	Parser                          events.EventParsing             `validate:"required"`
@@ -306,6 +309,40 @@ func guardStatusCode(err error) int {
 	return http.StatusInternalServerError
 }
 
+// startOp registers an API command with the shutdown drain, so shutdown waits
+// for it, and returns the func that ends it. Once Atlantis is shutting down it
+// refuses the command through refuse and returns false.
+func (a *APIController) startOp(refuse func(msg string)) (func(), bool) {
+	if a.Drainer == nil {
+		return func() {}, true
+	}
+	if !a.Drainer.StartOp() {
+		refuse("Atlantis is shutting down; try again on another replica")
+		return nil, false
+	}
+	return a.Drainer.OpDone, true
+}
+
+// errApplyLocked is returned while the global apply lock is held.
+var errApplyLocked = errors.New("apply is disabled globally")
+
+// checkApplyLock reports whether applies are allowed. It fails closed: if the
+// lock can't be checked, applies are refused. It returns the HTTP status to
+// answer with when they are not allowed.
+func (a *APIController) checkApplyLock() (int, error) {
+	if a.ApplyLockChecker == nil {
+		return 0, nil
+	}
+	lock, err := a.ApplyLockChecker.CheckApplyLock()
+	if err != nil {
+		return http.StatusServiceUnavailable, fmt.Errorf("checking global apply lock, which must be reachable to apply: %w", err)
+	}
+	if lock.Locked {
+		return http.StatusLocked, errApplyLocked
+	}
+	return 0, nil
+}
+
 func apiErrorStatusCode(err error) int {
 	if errors.Is(err, events.ErrTeamAllowlistDenied) {
 		return http.StatusForbidden
@@ -350,6 +387,12 @@ func (a *APIController) Plan(w http.ResponseWriter, r *http.Request) {
 		a.apiReportLegacyError(w, code, err)
 		return
 	}
+	done, ok := a.startOp(func(msg string) { a.apiReportLegacyError(w, http.StatusServiceUnavailable, errors.New(msg)) })
+	if !ok {
+		return
+	}
+	defer done()
+
 	endLocks, err := a.guardPullLocks(ctx, command.Plan)
 	if err != nil {
 		a.apiReportLegacyError(w, guardStatusCode(err), err)
@@ -386,6 +429,20 @@ func (a *APIController) Apply(w http.ResponseWriter, r *http.Request) {
 		a.apiReportLegacyError(w, code, err)
 		return
 	}
+	done, ok := a.startOp(func(msg string) { a.apiReportLegacyError(w, http.StatusServiceUnavailable, errors.New(msg)) })
+	if !ok {
+		return
+	}
+	defer done()
+
+	// The global apply lock covers API applies as it covers comment applies.
+	// Checked before planning, so a refused apply does no work.
+	if code, err := a.checkApplyLock(); err != nil {
+		a.Logger.Warn("refusing API apply for %s: %s", ctx.Pull.BaseRepo.FullName, err)
+		a.apiReportLegacyError(w, code, err)
+		return
+	}
+
 	endLocks, err := a.guardPullLocks(ctx, command.Apply)
 	if err != nil {
 		a.apiReportLegacyError(w, guardStatusCode(err), err)
@@ -1211,6 +1268,12 @@ func (a *APIController) Remediate(w http.ResponseWriter, r *http.Request) {
 		responder.ServiceUnavailable(w, r, "drift remediation is not enabled")
 		return
 	}
+
+	done, ok := a.startOp(func(msg string) { responder.ServiceUnavailable(w, r, msg) })
+	if !ok {
+		return
+	}
+	defer done()
 
 	// Parse the JSON payload
 	bytes, err := io.ReadAll(r.Body)
@@ -2179,6 +2242,12 @@ func (a *APIController) DetectDrift(w http.ResponseWriter, r *http.Request) {
 		responder.ServiceUnavailable(w, r, "drift detection is not enabled")
 		return
 	}
+
+	done, ok := a.startOp(func(msg string) { responder.ServiceUnavailable(w, r, msg) })
+	if !ok {
+		return
+	}
+	defer done()
 
 	// Parse the JSON payload
 	bytes, err := io.ReadAll(r.Body)
