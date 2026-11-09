@@ -24,6 +24,23 @@ type WorkingDirLockMetadata struct {
 	HeadCommit string
 	CommitURL  string
 	JobURL     string
+	// API marks a pull lock held by an API request. The request releases the
+	// project locks its pull gained while it ran, so while it holds the pull
+	// only the workspace locks of the commands it runs itself are admitted;
+	// see apiPullLockAdmits.
+	API bool
+}
+
+// apiPullLockAdmits reports whether a workspace lock for cmdName may be taken
+// while an API request holds the pull. The request runs plan, policy_check and
+// apply; any other command, such as import or state rm, could take a project
+// lock that the request's cleanup would release while it is still in use.
+func apiPullLockAdmits(cmdName command.Name) bool {
+	switch cmdName {
+	case command.Plan, command.PolicyCheck, command.Apply:
+		return true
+	}
+	return false
 }
 
 type workingDirLockError struct {
@@ -88,7 +105,8 @@ func (d *DefaultWorkingDirLocker) TryLock(repo models.Repo, pullNum int, workspa
 
 	// Unlock releases the pull's project locks, so no command of the pull
 	// starts while it runs; see TryLockPull.
-	if currentLock, exists := d.locks[d.pullKey(repoKey, pullNum)]; exists && currentLock.Command == command.Unlock {
+	// An API request admits only its own commands; see apiPullLockAdmits.
+	if currentLock, exists := d.locks[d.pullKey(repoKey, pullNum)]; exists && (currentLock.Command == command.Unlock || currentLock.API && !apiPullLockAdmits(cmdName)) {
 		return func() {}, d.pullLockError(repoKey, pullNum, cmdName, currentLock)
 	}
 	workspaceKey := d.workspaceKey(repoKey, pullNum, workspace, path, projectName)

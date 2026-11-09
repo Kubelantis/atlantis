@@ -5530,6 +5530,25 @@ func TestAPIController_PlanRefusedWhilePullBusy(t *testing.T) {
 	projectCommandBuilder.VerifyWasCalled(Never()).BuildPlanCommands(Any[*command.Context](), Any[*events.CommentCommand]())
 }
 
+// The API holds its pull lock as an API lock, so import, state rm and other
+// commands it doesn't run can't take project locks its cleanup would release.
+func TestAPIController_PlanHoldsAPIPullLock(t *testing.T) {
+	ac, _, _ := setup(t)
+	workingDirLocker := ac.WorkingDirLocker.(*MockWorkingDirLocker)
+
+	body, _ := json.Marshal(controllers.APIRequest{Repository: "Repo", Ref: "main", Type: "Gitlab", PR: 42, Projects: []string{"default"}})
+	req, _ := http.NewRequest("POST", "", bytes.NewBuffer(body))
+	req.Header.Set(atlantisTokenHeader, atlantisToken)
+	w := httptest.NewRecorder()
+	ac.Plan(w, req)
+
+	Equals(t, http.StatusOK, w.Code)
+	_, pullNum, cmdName, metadata := workingDirLocker.VerifyWasCalledOnce().TryLockPull(Any[models.Repo](), Any[int](), Any[command.Name](), Any[events.WorkingDirLockMetadata]()).GetCapturedArguments()
+	Equals(t, 42, pullNum)
+	Equals(t, command.Plan, cmdName)
+	Assert(t, metadata.API, "expected the pull lock to be held as an API lock")
+}
+
 // fakeApplyLock reports a fixed global apply lock state.
 type fakeApplyLock struct {
 	lock locking.ApplyCommandLock

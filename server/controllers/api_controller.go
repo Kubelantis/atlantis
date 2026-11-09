@@ -250,25 +250,28 @@ func normalizeAPIBranchRef(ref string) string {
 var errPullBusy = errors.New("another command of this pull request is running")
 
 // guardPullLocks begins an API command on ctx's pull. On a pull request it
-// holds the pull's working-dir lock, so no comment command of that pull runs
-// beside it. It returns a func, to call when the command ends, that releases
+// holds the pull's working-dir lock as an API lock, so no other command of
+// that pull, such as a comment command, import or state rm, starts beside it.
+// It returns a func, to call when the command ends, that releases
 // the project locks the command took, and only those: locks the pull already
 // held, such as a comment plan waiting for apply, stay.
 func (a *APIController) guardPullLocks(ctx *command.Context, cmd command.Name) (func(), error) {
 	unlockPull := func() {}
 	if ctx.Pull.Num > 0 {
-		unlock, err := a.WorkingDirLocker.TryLockPull(ctx.Pull.BaseRepo, ctx.Pull.Num, cmd, events.WorkingDirLockMetadataForPull(ctx.Pull))
+		metadata := events.WorkingDirLockMetadataForPull(ctx.Pull)
+		metadata.API = true
+		var err error
+		unlockPull, err = a.WorkingDirLocker.TryLockPull(ctx.Pull.BaseRepo, ctx.Pull.Num, cmd, metadata)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", errPullBusy, err)
 		}
-		unlockPull = unlock
 	}
 	before, err := a.pullLocks(ctx.Pull)
 	if err != nil {
 		unlockPull()
 		return nil, err
 	}
-	return func() {
+	release := func() {
 		defer unlockPull()
 		after, err := a.pullLocks(ctx.Pull)
 		if err != nil {
@@ -283,7 +286,8 @@ func (a *APIController) guardPullLocks(ctx *command.Context, cmd command.Name) (
 				ctx.Log.Err("releasing project lock %q: %s", key, err)
 			}
 		}
-	}, nil
+	}
+	return release, nil
 }
 
 // pullLocks returns the project locks held by pull.
