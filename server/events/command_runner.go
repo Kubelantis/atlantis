@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/drmaxgit/go-azuredevops/azuredevops"
 	"github.com/google/go-github/v88/github"
@@ -111,6 +112,10 @@ func preWorkflowHooksConfigured(runner PreWorkflowHooksCommandRunner, ctx *comma
 
 // DefaultCommandRunner is the first step when processing a comment command.
 type DefaultCommandRunner struct {
+	// ClosedPulls, if set, holds the closed marks of pulls whose cleanup is
+	// due. A command runs only on an open pull, so it clears the mark of a
+	// pull reopened since: its cleanup no longer applies.
+	ClosedPulls              ClosedPullRecorder
 	VCSClient                vcs.Client `validate:"required"`
 	GithubPullGetter         GithubPullGetter
 	AzureDevopsPullGetter    AzureDevopsPullGetter
@@ -162,6 +167,8 @@ func (c *DefaultCommandRunner) RunAutoplanCommandWithContext(traceCtx context.Co
 	traceCtx, span := tracing.Start(traceCtx, "atlantis.autoplan",
 		tracing.AttrRepo.String(baseRepo.FullName), tracing.AttrPull.Int(pull.Num), tracing.AttrCommand.String(command.Autoplan.String()))
 	defer span.End()
+	// The event showed the pull open no earlier than now.
+	openAt := time.Now()
 	if opStarted := c.Drainer.StartOp(); !opStarted {
 		if commentErr := c.VCSClient.CreateComment(c.Logger, baseRepo, pull.Num, ShutdownComment, command.Plan.String()); commentErr != nil {
 			c.Logger.Log(logging.Error, "unable to comment that Atlantis is shutting down: %s", commentErr)
@@ -213,6 +220,9 @@ func (c *DefaultCommandRunner) RunAutoplanCommandWithContext(traceCtx context.Co
 		Trigger:      command.AutoTrigger,
 	}
 	if !c.validateCtxAndComment(ctx, command.Autoplan, true) {
+		return
+	}
+	if !c.cancelClosedCleanup(ctx, command.Autoplan, openAt) {
 		return
 	}
 	if c.DisableAutoplan {
@@ -514,6 +524,8 @@ func (c *DefaultCommandRunner) RunCommentCommandWithContext(traceCtx context.Con
 	timer := scope.Timer(metrics.ExecutionTimeMetric).Start()
 	defer timer.Stop()
 
+	// The pull's state is read no earlier than now.
+	openAt := time.Now()
 	headRepo, pull, err := c.ensureValidRepoMetadata(baseRepo, maybeHeadRepo, maybePull, user, pullNum, log)
 	if err != nil {
 		return
@@ -540,6 +552,9 @@ func (c *DefaultCommandRunner) RunCommentCommandWithContext(traceCtx context.Con
 	}
 
 	if !c.validateCtxAndComment(ctx, cmd.Name, true) {
+		return
+	}
+	if !c.cancelClosedCleanup(ctx, cmd.Name, openAt) {
 		return
 	}
 
@@ -715,6 +730,25 @@ func (c *DefaultCommandRunner) fetchUserTeams(logger logging.SimpleLogging, repo
 
 	user.Teams = teams
 	return nil
+}
+
+// cancelClosedCleanup clears the closed mark of a pull seen open at openAt,
+// which validateCtxAndComment checked: the pull was reopened since it was
+// closed, so a cleanup deferred then must not delete what this command makes.
+// Unlock runs on closed pulls too, so it leaves the mark. If the mark can't be
+// cleared, the command doesn't run, as its plans and locks could be removed.
+func (c *DefaultCommandRunner) cancelClosedCleanup(ctx *command.Context, commandName command.Name, openAt time.Time) bool {
+	if c.ClosedPulls == nil || commandName == command.Unlock {
+		return true
+	}
+	if err := c.ClosedPulls.ClearPullClosed(ctx.Pull, openAt); err != nil {
+		ctx.Log.Err("cancelling the cleanup of the reopened pull request: %s", err)
+		if commentErr := c.VCSClient.CreateComment(ctx.Log, ctx.Pull.BaseRepo, ctx.Pull.Num, fmt.Sprintf("**Error:** not running %s: couldn't cancel the cleanup scheduled when this pull request was closed: %s. Try again.", commandName.String(), err), ""); commentErr != nil {
+			ctx.Log.Err("unable to comment: %s", commentErr)
+		}
+		return false
+	}
+	return true
 }
 
 func (c *DefaultCommandRunner) validateCtxAndComment(ctx *command.Context, commandName command.Name, shouldComment bool) bool {

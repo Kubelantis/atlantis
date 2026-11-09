@@ -2,6 +2,7 @@ package kubedb_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/runatlantis/atlantis/server/core/kube/kubedb/kubedbtest"
 	"github.com/runatlantis/atlantis/server/events/command"
@@ -44,6 +45,39 @@ func TestMarkPullClosed(t *testing.T) {
 	Ok(t, db.DeletePullStatus(pull))
 	Ok(t, db.DeletePullStatus(fresh))
 	closed, err = db.ClosedPulls()
+	Ok(t, err)
+	Equals(t, 0, len(closed))
+}
+
+// A command on an open pull clears a closed mark set before it saw the pull
+// open, but not one from a later close.
+func TestClearPullClosed(t *testing.T) {
+	db := kubedbtest.New(t)
+	t.Cleanup(func() { db.Close() })
+	repo := models.Repo{FullName: "org/repo", Owner: "org", Name: "repo", VCSHost: models.VCSHost{Hostname: "github.com", Type: models.Github}}
+	pull := models.PullRequest{Num: 7, BaseRepo: repo}
+
+	// No status, or no mark: nothing to clear.
+	Ok(t, db.ClearPullClosed(pull, time.Now()))
+	marked, err := db.PullMarkedClosed(pull)
+	Ok(t, err)
+	Assert(t, !marked, "expected no mark")
+
+	seenOpen := time.Now()
+	time.Sleep(10 * time.Millisecond)
+	Ok(t, db.MarkPullClosed(pull))
+	// Seen open before the close: the mark stays.
+	Ok(t, db.ClearPullClosed(pull, seenOpen))
+	marked, err = db.PullMarkedClosed(pull)
+	Ok(t, err)
+	Assert(t, marked, "expected the later close to stay marked")
+
+	// Seen open after the close: the pull was reopened.
+	Ok(t, db.ClearPullClosed(pull, time.Now()))
+	marked, err = db.PullMarkedClosed(pull)
+	Ok(t, err)
+	Assert(t, !marked, "expected the mark to be cleared")
+	closed, err := db.ClosedPulls()
 	Ok(t, err)
 	Equals(t, 0, len(closed))
 }

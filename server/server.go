@@ -716,6 +716,11 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		VCSClient:                vcsClient,
 		PlanStore:                planStore,
 	}
+	// The close webhook marks a pull closed before its cleanup, which runs
+	// only while the mark is there; commands clear the mark of a reopened
+	// pull. One recorder for all three keeps them in step.
+	closedPulls, _ := database.(events.ClosedPullRecorder)
+	basePullClosedExecutor.Closed = closedPulls
 	// A pull closed while one of its commands runs is cleaned up when the
 	// pull's last working-dir lock is released.
 	localWorkingDirLocker.SetIdleHook(basePullClosedExecutor.PullIdle)
@@ -1005,6 +1010,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 	}
 
 	commandRunner := &events.DefaultCommandRunner{
+		ClosedPulls:                    closedPulls,
 		VCSClient:                      vcsClient,
 		GithubPullGetter:               githubClient,
 		GitlabMergeRequestGetter:       gitlabClient,
@@ -1128,6 +1134,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 	eventsController := &events_controllers.VCSEventsController{
 		CommandRunner:                   clusterRouter,
 		PullCleaner:                     clusterRouter,
+		ClosedPulls:                     closedPulls,
 		Parser:                          eventParser,
 		CommentParser:                   commentParser,
 		Logger:                          logger,

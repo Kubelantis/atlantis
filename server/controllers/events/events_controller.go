@@ -62,6 +62,9 @@ type VCSEventsController struct {
 	ApplyDisabled  bool
 	EmojiReaction  string
 	ExecutableName string
+	// ClosedPulls, if set, durably marks a closed pull before its cleanup,
+	// so a cleanup deferred behind a running command isn't lost.
+	ClosedPulls events.ClosedPullRecorder
 	// GithubWebhookSecret is the secret added to this webhook via the GitHub
 	// UI that identifies this call as coming from GitHub. If empty, no
 	// request validation is done.
@@ -614,6 +617,17 @@ func (e *VCSEventsController) handlePullRequestEvent(logger logging.SimpleLoggin
 	case models.ClosedPullEvent:
 		// If the pull request was closed, we delete locks.
 		logger.Info("Pull request closed, cleaning up...")
+		if e.ClosedPulls != nil {
+			// Nothing is deleted unless the close is recorded: a cleanup
+			// deferred behind a running command relies on the mark.
+			if err := e.ClosedPulls.MarkPullClosed(pull); err != nil {
+				err = fmt.Errorf("recording the closed pull request: %w", err)
+				return HTTPResponse{
+					body: err.Error(),
+					err:  HTTPError{code: http.StatusServiceUnavailable, err: err},
+				}
+			}
+		}
 		if err := e.PullCleaner.CleanUpPull(logger, baseRepo, pull); err != nil {
 			return HTTPResponse{
 				body: err.Error(),

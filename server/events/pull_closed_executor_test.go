@@ -6,6 +6,7 @@ package events_test
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -443,6 +444,8 @@ func TestCleanUpPullWaitsForRunningCommand(t *testing.T) {
 		return nil, nil
 	})
 
+	// The close webhook marks the pull before cleaning it up.
+	Ok(t, db.MarkPullClosed(testdata.Pull))
 	Ok(t, pce.CleanUpPull(logger, testdata.GithubRepo, testdata.Pull))
 	w.VerifyWasCalled(Never()).Delete(Any[logging.SimpleLogging](), Any[models.Repo](), Any[models.PullRequest]())
 	closed, err := db.ClosedPulls()
@@ -474,5 +477,55 @@ func TestCleanUpReplicaSkipsClonesInUse(t *testing.T) {
 	c := &events.ReplicaCleaner{WorkingDir: w, WorkingDirLocker: locker}
 
 	Ok(t, c.CleanUpReplica(logger, testdata.GithubRepo, testdata.Pull))
+	w.VerifyWasCalled(Never()).Delete(Any[logging.SimpleLogging](), Any[models.Repo](), Any[models.PullRequest]())
+}
+
+// A pull reopened while a command it had when it was closed still runs keeps
+// its plans and locks: commands clear the closed mark, and the deferred
+// cleanup checks the mark before deleting anything.
+func TestCleanUpPullSkipsReopenedPull(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	RegisterMockTestingT(t)
+	w := mocks.NewMockWorkingDir()
+	ctrl := gomock.NewController(t)
+	l := lockmocks.NewMockLocker(ctrl) // no calls expected: nothing is unlocked
+	db := kubedbtest.New(t)
+	t.Cleanup(func() { db.Close() })
+	locker := events.NewDefaultWorkingDirLocker()
+	pce := &events.PullClosedExecutor{
+		Locker:           l,
+		VCSClient:        vcsmocks.NewMockClient(),
+		WorkingDir:       w,
+		Database:         db,
+		WorkingDirLocker: locker,
+		Closed:           db,
+	}
+	idle := make(chan struct{})
+	var once sync.Once
+	locker.SetIdleHook(func(repoKey string, pullNum int) {
+		pce.PullIdle(repoKey, pullNum)
+		once.Do(func() { close(idle) })
+	})
+
+	unlockWs, err := locker.TryLock(testdata.GithubRepo, testdata.Pull.Num, "default", ".", "", command.Apply, events.WorkingDirLockMetadata{})
+	Ok(t, err)
+	Ok(t, db.MarkPullClosed(testdata.Pull))
+	Ok(t, pce.CleanUpPull(logger, testdata.GithubRepo, testdata.Pull))
+
+	// The pull is reopened and a command runs on it.
+	Ok(t, db.ClearPullClosed(testdata.Pull, time.Now()))
+
+	unlockWs()
+	select {
+	case <-idle:
+	case <-time.After(5 * time.Second):
+		t.Fatal("idle hook did not run")
+	}
+	w.VerifyWasCalled(Never()).Delete(Any[logging.SimpleLogging](), Any[models.Repo](), Any[models.PullRequest]())
+	// The leader's sweep has nothing left to do either.
+	closed, err := db.ClosedPulls()
+	Ok(t, err)
+	Equals(t, 0, len(closed))
+	Ok(t, pce.CleanUpPull(logger, testdata.GithubRepo, testdata.Pull))
 	w.VerifyWasCalled(Never()).Delete(Any[logging.SimpleLogging](), Any[models.Repo](), Any[models.PullRequest]())
 }

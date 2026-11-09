@@ -66,7 +66,7 @@ Once a plan is discarded, you'll need to run `plan` again prior to running `appl
 
 `atlantis unlock` doesn't run while another command of the pull request is running, including `atlantis import` and `atlantis state rm`, and commands of that pull request don't start while it runs. Otherwise a running command could lose its lock to another pull request. Atlantis comments that the pull request is locked; run the command again once the other one finishes.
 
-Closing or merging a pull request removes its locks, plans and working directories. If a command of that pull request is still running, Atlantis waits: it records the close and cleans up when the command finishes. If the replica restarts in between, the cluster's leader finishes the cleanup within a few minutes.
+Closing or merging a pull request removes its locks, plans and working directories. Atlantis first records the close; if it can't, the webhook fails and nothing is removed. If a command of that pull request is still running, Atlantis waits and cleans up when the command finishes. If the replica restarts in between, or the command runs on another replica, the cluster's leader finishes the cleanup within a few minutes. A pull request reopened before then keeps what its new commands create: running a command on it cancels the pending cleanup.
 
 ## Relationship to Terraform State Locking
 

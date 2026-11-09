@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+	"time"
 
 	"github.com/runatlantis/atlantis/server/logging"
 
@@ -59,8 +60,9 @@ type PullClosedExecutor struct {
 	// the pull: cleanup holds the pull's lock, and a pull closed while a
 	// command runs is cleaned up when it finishes (see PullIdle).
 	WorkingDirLocker WorkingDirLocker
-	// Closed, if set, durably records a pull closed while a command ran, so
-	// its cleanup is retried after a restart.
+	// Closed, if set, holds the durable closed mark the webhook sets before
+	// cleanup (see ClosedPullRecorder). Cleanup runs only while the mark is
+	// there: a pull reopened since it was closed keeps its plans and locks.
 	Closed ClosedPullRecorder
 
 	pendingMu sync.Mutex
@@ -68,11 +70,16 @@ type PullClosedExecutor struct {
 	pending map[string]pendingCleanup
 }
 
-// ClosedPullRecorder durably records a pull closed while one of its commands
-// was running. The record goes when the pull's status is deleted at the end
-// of its cleanup. It is implemented by kubedb.KubeDB.
+// ClosedPullRecorder durably marks a pull closed whose cleanup is due. The
+// close webhook sets the mark before cleanup, so a cleanup deferred while a
+// command runs survives a failed webhook response, a restart, and commands
+// running on another replica: the leader's sweep finds it. The mark goes
+// with the pull's status at the end of its cleanup, or when a command shows
+// the pull was reopened. It is implemented by kubedb.KubeDB.
 type ClosedPullRecorder interface {
 	MarkPullClosed(pull models.PullRequest) error
+	PullMarkedClosed(pull models.PullRequest) (bool, error)
+	ClearPullClosed(pull models.PullRequest, openAt time.Time) error
 }
 
 type pendingCleanup struct {
@@ -85,14 +92,11 @@ func pendingKey(repoKey string, pullNum int) string {
 	return fmt.Sprintf("%s#%d", repoKey, pullNum)
 }
 
-// deferCleanup records that pull was closed while a command ran.
+// deferCleanup notes that pull was closed while a command ran, so the idle
+// hook retries its cleanup when the pull's last local command finishes. The
+// durable mark set by the webhook covers everything else.
 func (p *PullClosedExecutor) deferCleanup(logger logging.SimpleLogging, repo models.Repo, pull models.PullRequest, busy error) {
 	logger.Info("pull request closed while a command is running; cleaning up when it finishes: %s", busy)
-	if p.Closed != nil {
-		if err := p.Closed.MarkPullClosed(pull); err != nil {
-			logger.Err("recording the closed pull request for later cleanup: %s", err)
-		}
-	}
 	p.pendingMu.Lock()
 	defer p.pendingMu.Unlock()
 	if p.pending == nil {
@@ -196,6 +200,18 @@ func (p *PullClosedExecutor) CleanUpPull(logger logging.SimpleLogging, repo mode
 			return nil
 		}
 		defer unlock()
+	}
+	// The idle hook and the leader's sweep run a cleanup deferred earlier;
+	// under the pull's lock, check it still applies.
+	if p.Closed != nil {
+		closed, err := p.Closed.PullMarkedClosed(pull)
+		if err != nil {
+			return fmt.Errorf("checking the pull request is still closed: %w", err)
+		}
+		if !closed {
+			logger.Info("pull request %d is no longer marked closed; it was reopened or already cleaned up", pull.Num)
+			return nil
+		}
 	}
 	pullStatus, err := p.Database.GetPullStatus(pull)
 	if err != nil {

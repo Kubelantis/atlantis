@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/drmaxgit/go-azuredevops/azuredevops"
 	"github.com/google/go-github/v88/github"
@@ -1033,4 +1034,77 @@ func setup(t *testing.T) (events_controllers.VCSEventsController, *mocks.MockGit
 		VCSClient:                       vcsmock,
 	}
 	return e, v, gl, ado, p, cr, c, vcsmock, cp
+}
+
+// fakeClosedPulls records MarkPullClosed calls, failing them with err.
+type fakeClosedPulls struct {
+	err    error
+	marked []int
+}
+
+func (f *fakeClosedPulls) MarkPullClosed(pull models.PullRequest) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.marked = append(f.marked, pull.Num)
+	return nil
+}
+
+func (f *fakeClosedPulls) PullMarkedClosed(models.PullRequest) (bool, error) { return true, nil }
+
+func (f *fakeClosedPulls) ClearPullClosed(models.PullRequest, time.Time) error { return nil }
+
+// A close is recorded before anything is cleaned up. If it can't be
+// recorded, nothing is deleted and the webhook fails, so a cleanup deferred
+// behind a running command isn't silently lost.
+func TestPost_PullClosedIsRecordedBeforeCleanup(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		markErr  error
+		wantCode int
+		wantBody string
+	}{
+		{"recorded", nil, http.StatusOK, "Pull request cleaned successfully"},
+		{"not recorded", errors.New("apiserver down"), http.StatusServiceUnavailable, "recording the closed pull request: apiserver down"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			RegisterMockTestingT(t)
+			pullCleaner := emocks.NewMockPullCleaner()
+			closed := &fakeClosedPulls{err: tc.markErr}
+			allowlist, err := events.NewRepoAllowlistChecker("*")
+			Ok(t, err)
+			logger := logging.NewNoopLogger(t)
+			ec := &events_controllers.VCSEventsController{
+				PullCleaner: pullCleaner,
+				ClosedPulls: closed,
+				Parser: &events.EventParser{
+					BitbucketUser:      "bb-user",
+					BitbucketToken:     "bb-token",
+					BitbucketServerURL: "https://bbserver.com",
+				},
+				RepoAllowlistChecker: allowlist,
+				SupportedVCSHosts:    []models.VCSHostType{models.BitbucketServer},
+				Logger:               logger,
+				Scope:                metricstest.NewLoggingScope(t, logger, "null"),
+			}
+			requestBytes, err := os.ReadFile(filepath.Join("testdata", "bb-server-pull-deleted-event.json"))
+			Ok(t, err)
+			req, err := http.NewRequest("POST", "/events", bytes.NewBuffer(requestBytes))
+			Ok(t, err)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Event-Key", "pr:deleted")
+			req.Header.Set("X-Request-ID", "request-id")
+
+			w := httptest.NewRecorder()
+			ec.Post(w, req)
+
+			ResponseContains(t, w, tc.wantCode, tc.wantBody)
+			if tc.markErr != nil {
+				pullCleaner.VerifyWasCalled(Never()).CleanUpPull(Any[logging.SimpleLogging](), Any[models.Repo](), Any[models.PullRequest]())
+				return
+			}
+			Equals(t, []int{10}, closed.marked)
+			pullCleaner.VerifyWasCalledOnce().CleanUpPull(Any[logging.SimpleLogging](), Any[models.Repo](), Any[models.PullRequest]())
+		})
+	}
 }

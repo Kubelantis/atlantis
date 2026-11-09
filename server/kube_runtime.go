@@ -277,11 +277,9 @@ func (k *kubeRuntime) wire(d kubeDeps) *clusterrpc.Router {
 	// Closing a pull also removes the copies other replicas hold.
 	d.PullClosedExecutor.Peers = router
 	// Cleanup waits for the pull's running commands; a pull closed while one
-	// runs is recorded, and finished by its owner or by the leader's sweep.
+	// runs keeps its closed mark (set by the webhook, see NewServer), and is
+	// finished by its owner or by the leader's sweep.
 	d.PullClosedExecutor.WorkingDirLocker = d.WorkingDirLocker
-	if closed, ok := d.Database.(events.ClosedPullRecorder); ok {
-		d.PullClosedExecutor.Closed = closed
-	}
 	if lister, ok := d.Database.(closedPullLister); ok {
 		k.closedPulls = lister
 		k.pullCleaner = router
