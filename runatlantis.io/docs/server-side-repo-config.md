@@ -425,6 +425,7 @@ Project inputs combine with the server-side ones:
 - `var_files`, `vars` and `backend_config` set in a project replace the server-side value.
 - `env` is merged by name; a project value wins for a name both set.
 - `extra_args` is merged by step. A project's arguments are added after the server-side ones for the same step, so a project cannot remove an argument the server passes.
+- An argument the server already passes is not added twice. Atlantis compares whole arguments: a single token such as `-lock-timeout=5m`, or a flag and its value given as two tokens, such as `-target module.a`. So the same flag with a different value (`-target module.b`) is kept. A value that starts with `-`, such as `-1`, isn't recognized as a value; write such arguments in the `-flag=value` form (`-parallelism=-1`).
 
 Repo config is written by pull request authors, so its inputs are limited:
 
