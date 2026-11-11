@@ -51,15 +51,17 @@ Every persisted key moves into a new, versioned key space that includes the VCS 
 
 **Release N+1 (contract).** Writes go to new keys only, and a migration sweep moves or invalidates every legacy artifact, so N+2 doesn't depend on first use.
 - Locks and S3 plans are written under the new key only. Reads still fall back to legacy keys, with the checks above.
-- **When the sweep runs.** Each replica's membership Lease carries a `keys-version` annotation. The leader starts the sweep only once every member reports N+1, so no replica still writes legacy keys. It repeats the sweep periodically until a full pass finds nothing, then records completion in a ConfigMap.
-- **Per pull,** the sweep holds the pull's Leases, so no command runs on it at the same time. It checks `LostPullLock` before every write or delete and stops if the Lease is gone.
+- **Two sweeps.** The shared sweep covers lock Leases, S3 plans and logs, which all replicas see. The volume sweep covers clone directories, which live on each replica's own volume.
+- **When the shared sweep runs.** Each replica's membership Lease carries a `keys-version` annotation. The leader starts the sweep only once every member reports N+1, so no replica still writes legacy keys. It repeats the sweep periodically until a full pass finds nothing, then records completion in a ConfigMap.
+- **When the volume sweep runs.** Every replica runs it at every startup from N+1 on, including N+2 and later, before it takes pulls. The completion record never skips it: a replica that was offline throughout N+1 can return with a legacy layout on its volume. It looks for entries under `repos/` whose first segment doesn't start with `@`. When there are none, it costs one directory read.
+- **Per pull,** both sweeps first take the local guard `WorkingDirLocker.TryLockPull(..., command.Unlock, ...)`, which keeps every command (plan, apply, import, state) off the pull on this replica. Then they take the pull's Leases, which keep other replicas out. Leases alone aren't enough, because `pulllock` lets a replica re-enter a Lease it already holds. If either is busy, the pull is skipped and retried on the next pass. `LostPullLock` is checked before every write or delete, and the sweep stops on that pull if the Lease is gone.
 - **Locks.** Each legacy lock Lease gets its new Lease if missing, and the legacy one is deleted. The lock id in links becomes the new key.
 - **S3 plans.** A legacy object is deleted only after its new-key copy is confirmed to exist with a matching `vcs-host` and `head-commit`. Otherwise the plan is discarded and the object deleted.
-- **Clone directories.** Each replica moves its own remaining legacy directories, with the same `origin` host check as on first use. A directory that fails the check is deleted, and its plans are discarded.
+- **Clone directories,** in the volume sweep, are moved with the same `origin` host check as on first use. A directory that fails the check is deleted, and its plans are discarded.
 - **Logs.** Legacy log keys are deleted.
 - **Discarding a plan** sets `DiscardedPlanStatus` for those projects and posts a PR comment asking for a re-plan. The status is written with a conditional update, and only if the project still has no plan under the new key, so a fresh plan is never marked discarded. Its locks stay. Apply then refuses with "run plan again" instead of failing on a missing file.
 
-**Release N+2.** The fallbacks, the legacy scanning and the legacy pull Lease are removed. At startup the leader checks the completion record. If it is missing, because an upgrade skipped N+1 against the release notes, the leader runs the same sweep before replicas take pulls. The cost is a re-plan, never a held lock with no plan behind it.
+**Release N+2.** The fallbacks, the legacy reads and the legacy pull Lease are removed. The volume sweep stays and keeps running at every startup. The leader checks the completion record. If it is missing, because an upgrade skipped N+1 against the release notes, the leader runs the shared sweep before replicas take pulls. The cost is a re-plan, never a held lock with no plan behind it.
 
 **Alternatives considered.**
 - **Detect and refuse same-named pulls on two hosts.** It costs nearly as much, since every key site needs the check, and it leaves the setups that hit this unsupported.
@@ -80,5 +82,7 @@ Every persisted key moves into a new, versioned key space that includes the VCS 
   - two same-named pulls on different hosts, including a legacy name that looks like a host;
   - old-key data found after upgrading;
   - a legacy S3 object with another host's or no `vcs-host` refused and not deleted by that pull;
-  - the N+1 sweep waiting for N replicas, moving or discarding legacy plans, and not discarding a fresh plan;
+  - the shared sweep waiting for N replicas, moving or discarding legacy plans, and not discarding a fresh plan;
+  - a sweep skipping a pull while a command runs on it on the same replica;
+  - a replica returning on N+2 with a legacy volume after completion was recorded;
   - a mixed old/new replica pair honouring each other's locks.
