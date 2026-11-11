@@ -5793,23 +5793,23 @@ func (m *mockExternalPlanStore) Load(ctx command.ProjectContext, planPath string
 func (m *mockExternalPlanStore) Remove(ctx command.ProjectContext, planPath string) error {
 	return nil
 }
-func (m *mockExternalPlanStore) ListWorkspaces(owner, repo string, pullNum int) ([]string, error) {
+func (m *mockExternalPlanStore) ListWorkspaces(repo models.Repo, pullNum int) ([]string, error) {
 	return m.workspaces, nil
 }
-func (m *mockExternalPlanStore) RestorePlans(pullDir, owner, repo string, pullNum int) error {
+func (m *mockExternalPlanStore) RestorePlans(pullDir string, repo models.Repo, pullNum int) error {
 	// Capability probe uses empty pullDir; real stores no-op that path.
 	if pullDir == "" {
 		return nil
 	}
 	if m.restoreFn != nil {
-		return m.restoreFn(pullDir, owner, repo, pullNum)
+		return m.restoreFn(pullDir, repo.Owner, repo.Name, pullNum)
 	}
 	return nil
 }
-func (m *mockExternalPlanStore) DeleteForPull(owner, repo string, pullNum int) error {
+func (m *mockExternalPlanStore) DeleteForPull(repo models.Repo, pullNum int) error {
 	return nil
 }
-func (m *mockExternalPlanStore) DeletePlanForProject(owner, repo string, pullNum int, workspace, repoRelDir, projectName string) error {
+func (m *mockExternalPlanStore) DeletePlanForProject(repo models.Repo, pullNum int, workspace, repoRelDir, projectName string) error {
 	return nil
 }
 

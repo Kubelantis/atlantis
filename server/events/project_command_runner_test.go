@@ -2592,12 +2592,12 @@ func (s *restoringPlanStore) Load(_ command.ProjectContext, planPath string) err
 	return os.WriteFile(planPath, s.contents, 0o600)
 }
 func (s *restoringPlanStore) Remove(command.ProjectContext, string) error { return nil }
-func (s *restoringPlanStore) ListWorkspaces(string, string, int) ([]string, error) {
+func (s *restoringPlanStore) ListWorkspaces(models.Repo, int) ([]string, error) {
 	return nil, nil
 }
-func (s *restoringPlanStore) RestorePlans(string, string, string, int) error { return nil }
-func (s *restoringPlanStore) DeleteForPull(string, string, int) error        { return nil }
-func (s *restoringPlanStore) DeletePlanForProject(string, string, int, string, string, string) error {
+func (s *restoringPlanStore) RestorePlans(string, models.Repo, int) error { return nil }
+func (s *restoringPlanStore) DeleteForPull(models.Repo, int) error        { return nil }
+func (s *restoringPlanStore) DeletePlanForProject(models.Repo, int, string, string, string) error {
 	return nil
 }
 

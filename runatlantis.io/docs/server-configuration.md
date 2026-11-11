@@ -703,6 +703,8 @@ Archived job logs hold Terraform output, which can include sensitive values. The
 
 Plan files in the plan store hold the planned values, which can include sensitive values. Atlantis deletes a plan after it is applied, when it is discarded, and when its pull request is closed. If a delete fails, for example because of S3 permissions, throttling or a KMS error, the plan stays in the bucket. Atlantis logs the failure at `error`, counts it in `atlantis_plan_store_delete_errors_total`, and says so in the response to a UI discard and in the comment on `atlantis unlock`. The plan still can't be applied: that is decided by the pull request's status, not by the file. Add an S3 lifecycle rule that expires objects under the plan store's prefix after a retention period that suits you, as a backstop.
 
+Plans are stored under `@v2/<vcs-host>/<owner>/<repo>/<pull>/...` below the plan store's prefix, so repositories with the same name on two VCS hosts don't share plans. For one release, each plan is also written under the earlier key, `<owner>/<repo>/<pull>/...`, so replicas still running an earlier version during a rolling update can apply it. Every plan records its VCS host in the `vcs-host` object metadata. A plan under the earlier key is applied or deleted only for a pull on that host. Plans made by an earlier version have no host recorded, so they can't be applied after the upgrade: run `atlantis plan` again.
+
 ### `--enable-policy-checks` <Badge text="v0.17.0" type="info"/>
 
 ```bash

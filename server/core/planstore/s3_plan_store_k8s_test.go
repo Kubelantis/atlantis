@@ -62,12 +62,12 @@ func TestRestoreListAndDeleteAcrossPages(t *testing.T) {
 		require.NoError(t, os.WriteFile(p, []byte(ws), 0o600))
 		require.NoError(t, store.Save(ctx, p))
 	}
-	ws, err := store.ListWorkspaces(ctx.BaseRepo.Owner, ctx.BaseRepo.Name, ctx.Pull.Num)
+	ws, err := store.ListWorkspaces(ctx.BaseRepo, ctx.Pull.Num)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"a", "b", "c"}, ws)
 
 	dst := t.TempDir()
-	require.NoError(t, store.RestorePlans(dst, ctx.BaseRepo.Owner, ctx.BaseRepo.Name, ctx.Pull.Num))
+	require.NoError(t, store.RestorePlans(dst, ctx.BaseRepo, ctx.Pull.Num))
 	var restored []string
 	require.NoError(t, filepath.WalkDir(dst, func(path string, d fs.DirEntry, err error) error {
 		if err == nil && !d.IsDir() {
@@ -77,6 +77,6 @@ func TestRestoreListAndDeleteAcrossPages(t *testing.T) {
 	}))
 	assert.Len(t, restored, 3)
 
-	require.NoError(t, store.DeleteForPull(ctx.BaseRepo.Owner, ctx.BaseRepo.Name, ctx.Pull.Num))
+	require.NoError(t, store.DeleteForPull(ctx.BaseRepo, ctx.Pull.Num))
 	assert.Empty(t, fake.Keys())
 }

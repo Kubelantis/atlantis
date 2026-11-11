@@ -142,6 +142,18 @@ func (b *Bucket) Exists(ctx context.Context, key string) (bool, error) {
 	return false, fmt.Errorf("checking s3://%s/%s: %w", b.Name, key, err)
 }
 
+// Metadata returns key's user metadata, and whether key exists.
+func (b *Bucket) Metadata(ctx context.Context, key string) (map[string]string, bool, error) {
+	out, err := b.Client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(b.Name), Key: aws.String(key)})
+	if err == nil {
+		return out.Metadata, true, nil
+	}
+	if IsNotFound(err) {
+		return nil, false, nil
+	}
+	return nil, false, fmt.Errorf("checking s3://%s/%s: %w", b.Name, key, err)
+}
+
 // Get opens key for reading. The caller closes the body.
 func (b *Bucket) Get(ctx context.Context, key string) (*s3.GetObjectOutput, error) {
 	out, err := b.Client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(b.Name), Key: aws.String(key)})

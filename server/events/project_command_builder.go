@@ -1345,10 +1345,10 @@ func (p *DefaultProjectCommandBuilder) buildAllProjectCommandsByPlan(ctx *comman
 		ctx.Log.Info("pull directory missing, attempting to restore plans")
 		// Probe capability first to avoid pointless I/O on stores that don't
 		// support restore (e.g. LocalPlanStore).
-		if errors.Is(p.PlanStore.RestorePlans("", "", "", 0), runtime.ErrRestoreNotSupported) {
+		if errors.Is(p.PlanStore.RestorePlans("", models.Repo{}, 0), runtime.ErrRestoreNotSupported) {
 			return nil, os.ErrNotExist
 		}
-		workspaces, listErr := p.PlanStore.ListWorkspaces(ctx.Pull.BaseRepo.Owner, ctx.Pull.BaseRepo.Name, ctx.Pull.Num)
+		workspaces, listErr := p.PlanStore.ListWorkspaces(ctx.Pull.BaseRepo, ctx.Pull.Num)
 		if listErr != nil {
 			return nil, fmt.Errorf("listing workspaces from external store: %w", listErr)
 		}
@@ -1373,7 +1373,7 @@ func (p *DefaultProjectCommandBuilder) buildAllProjectCommandsByPlan(ctx *comman
 		if err != nil {
 			return nil, err
 		}
-		if restoreErr := p.PlanStore.RestorePlans(restoreDir, ctx.Pull.BaseRepo.Owner, ctx.Pull.BaseRepo.Name, ctx.Pull.Num); restoreErr != nil {
+		if restoreErr := p.PlanStore.RestorePlans(restoreDir, ctx.Pull.BaseRepo, ctx.Pull.Num); restoreErr != nil {
 			return nil, fmt.Errorf("restoring plans from external store: %w", restoreErr)
 		}
 	}
@@ -1695,7 +1695,7 @@ func (p *DefaultProjectCommandBuilder) buildProjectCommand(ctx *command.Context,
 		// LocalPlanStore signals this via ErrRestoreNotSupported; external
 		// stores (S3) return nil and Load restores the plan in doApply before
 		// plan validation (this path does not call RestorePlans).
-		if errors.Is(p.PlanStore.RestorePlans("", "", "", 0), runtime.ErrRestoreNotSupported) {
+		if errors.Is(p.PlanStore.RestorePlans("", models.Repo{}, 0), runtime.ErrRestoreNotSupported) {
 			return projCtx, errors.New("no working directory found–did you run plan?")
 		}
 		ctx.Log.Info("working directory missing, re-cloning repo for apply")

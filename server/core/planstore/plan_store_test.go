@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/runatlantis/atlantis/server/events/command"
+	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/runatlantis/atlantis/server/logging"
 	. "github.com/runatlantis/atlantis/testing"
 )
@@ -58,10 +59,10 @@ func TestLocalPlanStore_Remove_NonexistentFile(t *testing.T) {
 func TestLocalPlanStore_RestoreUnsupportedWithoutSeparateDir(t *testing.T) {
 	store := &LocalPlanStore{}
 
-	err := store.RestorePlans("", "owner", "repo", 1)
+	err := store.RestorePlans("", models.Repo{Owner: "owner", Name: "repo"}, 1)
 	Assert(t, errors.Is(err, ErrRestoreNotSupported), "expected ErrRestoreNotSupported, got %v", err)
 
-	workspaces, err := store.ListWorkspaces("owner", "repo", 1)
+	workspaces, err := store.ListWorkspaces(models.Repo{Owner: "owner", Name: "repo"}, 1)
 	Ok(t, err)
 	Equals(t, 0, len(workspaces))
 }
@@ -71,8 +72,8 @@ func TestLocalPlanStore_RestoreUnsupportedWithoutSeparateDir(t *testing.T) {
 func TestLocalPlanStore_RestoreSupportedWithSeparateDir(t *testing.T) {
 	store := &LocalPlanStore{SeparatePlanDir: t.TempDir()}
 
-	Ok(t, store.RestorePlans("", "owner", "repo", 1))
-	Ok(t, store.RestorePlans(filepath.Join(store.SeparatePlanDir, "anything"), "owner", "repo", 1))
+	Ok(t, store.RestorePlans("", models.Repo{Owner: "owner", Name: "repo"}, 1))
+	Ok(t, store.RestorePlans(filepath.Join(store.SeparatePlanDir, "anything"), models.Repo{Owner: "owner", Name: "repo"}, 1))
 }
 
 func TestLocalPlanStore_ListWorkspaces(t *testing.T) {
@@ -93,7 +94,7 @@ func TestLocalPlanStore_ListWorkspaces(t *testing.T) {
 	writePlan("cached", ".terragrunt-cache", "project1", "cached.tfplan")
 
 	store := &LocalPlanStore{SeparatePlanDir: sharePlanDir}
-	workspaces, err := store.ListWorkspaces("owner", "repo", 42)
+	workspaces, err := store.ListWorkspaces(models.Repo{Owner: "owner", Name: "repo"}, 42)
 	Ok(t, err)
 
 	sort.Strings(workspaces)
@@ -104,7 +105,7 @@ func TestLocalPlanStore_ListWorkspaces(t *testing.T) {
 func TestLocalPlanStore_ListWorkspacesMissingPullDir(t *testing.T) {
 	store := &LocalPlanStore{SeparatePlanDir: t.TempDir()}
 
-	workspaces, err := store.ListWorkspaces("owner", "repo", 99)
+	workspaces, err := store.ListWorkspaces(models.Repo{Owner: "owner", Name: "repo"}, 99)
 	Ok(t, err)
 	Equals(t, 0, len(workspaces))
 }

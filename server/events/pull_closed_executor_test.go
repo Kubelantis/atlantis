@@ -398,15 +398,15 @@ type countingPlanStore struct {
 func (s *countingPlanStore) Save(command.ProjectContext, string) error   { return nil }
 func (s *countingPlanStore) Load(command.ProjectContext, string) error   { return nil }
 func (s *countingPlanStore) Remove(command.ProjectContext, string) error { return nil }
-func (s *countingPlanStore) ListWorkspaces(string, string, int) ([]string, error) {
+func (s *countingPlanStore) ListWorkspaces(models.Repo, int) ([]string, error) {
 	return nil, nil
 }
-func (s *countingPlanStore) RestorePlans(string, string, string, int) error { return nil }
-func (s *countingPlanStore) DeleteForPull(string, string, int) error {
+func (s *countingPlanStore) RestorePlans(string, models.Repo, int) error { return nil }
+func (s *countingPlanStore) DeleteForPull(models.Repo, int) error {
 	s.deleteForPullCalls++
 	return nil
 }
-func (s *countingPlanStore) DeletePlanForProject(string, string, int, string, string, string) error {
+func (s *countingPlanStore) DeletePlanForProject(models.Repo, int, string, string, string) error {
 	return nil
 }
 
