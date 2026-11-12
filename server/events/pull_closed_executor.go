@@ -6,6 +6,7 @@ package events
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -213,12 +214,31 @@ func (p *PullClosedExecutor) CleanUpPull(logger logging.SimpleLogging, repo mode
 			return nil
 		}
 	}
+	// If this replica loses the pull's lock, another replica may own the pull
+	// now and have made fresh state for it, for example after a reopen. So
+	// ownership is checked again before each step that deletes shared state,
+	// and the cleanup stops once it is lost. The pull stays marked closed, so
+	// a later sweep cleans up under the pull's lock if it is still closed.
+	fence := pullFence(p.WorkingDirLocker, repo, pull.Num)
+	stillOwned := func(next string) error {
+		if fence == nil {
+			return nil
+		}
+		if err := fence(); err != nil {
+			return fmt.Errorf("stopped before %s: %w", next, err)
+		}
+		return nil
+	}
+
 	pullStatus, err := p.Database.GetPullStatus(pull)
 	if err != nil {
 		// Log and continue to clean up other resources.
 		logger.Err("retrieving pull status: %s", err)
 	}
 
+	if err := stillOwned("deleting job logs"); err != nil {
+		return err
+	}
 	if pj, ok := p.LogStreamResourceCleaner.(PullJobsCleaner); ok {
 		// One pass over every job of the pull, persisted logs included.
 		pj.CleanUpPullJobs(pull.BaseRepo, pull.Num)
@@ -253,13 +273,19 @@ func (p *PullClosedExecutor) CleanUpPull(logger logging.SimpleLogging, repo mode
 		workspaceErr = fmt.Errorf("cleaning workspace: %w", err)
 	}
 	if p.Peers != nil {
+		if err := stillOwned("cleaning up peers"); err != nil {
+			return errors.Join(err, workspaceErr)
+		}
 		p.Peers.CleanUpPeers(logger, repo, pull)
 	}
 
 	// Always attempt external plan cleanup even if workspace deletion failed,
 	// so S3 objects are not orphaned when local delete errors.
 	if p.PlanStore != nil {
-		if err := p.PlanStore.DeleteForPull(repo, pull.Num, pullFence(p.WorkingDirLocker, repo, pull.Num)); err != nil {
+		if err := p.PlanStore.DeleteForPull(repo, pull.Num, fence); err != nil {
+			if errors.Is(err, ErrPullLockLostCleanup) {
+				return errors.Join(fmt.Errorf("stopped deleting plans: %w", err), workspaceErr)
+			}
 			logger.Err("failed to delete plans from the plan store; they stay in the bucket: %s", err)
 		}
 	}
@@ -271,12 +297,18 @@ func (p *PullClosedExecutor) CleanUpPull(logger logging.SimpleLogging, repo mode
 	// Finally, delete locks. We do this last because when someone
 	// unlocks a project, right now we don't actually delete the plan
 	// so we might have plans laying around but no locks.
+	if err := stillOwned("releasing locks"); err != nil {
+		return err
+	}
 	locks, err := p.Locker.UnlockByPull(repo, pull.Num)
 	if err != nil {
 		return fmt.Errorf("cleaning up locks: %w", err)
 	}
 
 	// Delete pull from DB.
+	if err := stillOwned("deleting the pull status"); err != nil {
+		return err
+	}
 	if err := p.Database.DeletePullStatus(pull); err != nil {
 		logger.Err("deleting pull from db: %s", err)
 	}

@@ -1099,9 +1099,10 @@ type PullLockFencer interface {
 // lost the pull's lock to another replica.
 var ErrPullLockLost = errors.New("this Atlantis replica lost the pull request's lock to another replica, so the remaining steps were not started. Re-run the command")
 
-// ErrPullLockLostCleanup is returned when deleting a pull's stored plans stops
-// because this replica lost the pull's lock: the plans are the new holder's.
-var ErrPullLockLostCleanup = errors.New("this Atlantis replica lost the pull request's lock to another replica, so it stopped deleting the pull's stored plans")
+// ErrPullLockLostCleanup is returned when deleting a pull's plans, locks or
+// status stops because this replica lost the pull's lock: they may be the new
+// holder's.
+var ErrPullLockLostCleanup = errors.New("this Atlantis replica lost the pull request's lock to another replica, so it stopped cleaning up the pull request")
 
 // pullFence returns a plan store fence that fails once locker reports the
 // pull's lock lost, or nil if locker can't lose it.
