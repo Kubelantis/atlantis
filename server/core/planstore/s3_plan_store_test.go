@@ -103,8 +103,10 @@ func (m *mockS3Client) ListObjectsV2(_ context.Context, _ *s3.ListObjectsV2Input
 func testProjectContext() command.ProjectContext {
 	return command.ProjectContext{
 		BaseRepo: models.Repo{
-			Owner: "acme",
-			Name:  "infra",
+			FullName: "acme/infra",
+			Owner:    "acme",
+			Name:     "infra",
+			VCSHost:  models.VCSHost{Hostname: "github.com"},
 		},
 		Pull: models.PullRequest{
 			Num: 42,
@@ -119,7 +121,7 @@ func TestS3Key_WithPrefix(t *testing.T) {
 	ctx := testProjectContext()
 
 	key := store.TestS3Key(ctx, "/tmp/plans/myproject-default.tfplan")
-	assert.Equal(t, "atlantis/plans/acme/infra/42/default/modules/vpc/myproject-default.tfplan", key)
+	assert.Equal(t, "atlantis/plans/@v2/github.com/acme/infra/42/default/modules/vpc/myproject-default.tfplan", key)
 }
 
 func TestS3Key_WithoutPrefix(t *testing.T) {
@@ -127,7 +129,7 @@ func TestS3Key_WithoutPrefix(t *testing.T) {
 	ctx := testProjectContext()
 
 	key := store.TestS3Key(ctx, "/tmp/plans/myproject-default.tfplan")
-	assert.Equal(t, "acme/infra/42/default/modules/vpc/myproject-default.tfplan", key)
+	assert.Equal(t, "@v2/github.com/acme/infra/42/default/modules/vpc/myproject-default.tfplan", key)
 }
 
 func TestS3Key_NestedRepoRelDir(t *testing.T) {
@@ -136,7 +138,7 @@ func TestS3Key_NestedRepoRelDir(t *testing.T) {
 	ctx.RepoRelDir = "envs/prod/us-east-1"
 
 	key := store.TestS3Key(ctx, "/tmp/plan.tfplan")
-	assert.Equal(t, "pfx/acme/infra/42/default/envs/prod/us-east-1/plan.tfplan", key)
+	assert.Equal(t, "pfx/@v2/github.com/acme/infra/42/default/envs/prod/us-east-1/plan.tfplan", key)
 }
 
 func TestS3Key_TrailingSlashPrefix(t *testing.T) {
@@ -144,7 +146,7 @@ func TestS3Key_TrailingSlashPrefix(t *testing.T) {
 	ctx := testProjectContext()
 
 	key := store.TestS3Key(ctx, "/tmp/plan.tfplan")
-	assert.Equal(t, "prefix/acme/infra/42/default/modules/vpc/plan.tfplan", key)
+	assert.Equal(t, "prefix/@v2/github.com/acme/infra/42/default/modules/vpc/plan.tfplan", key)
 }
 
 func TestSave_Success(t *testing.T) {
@@ -161,6 +163,8 @@ func TestSave_Success(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "my-bucket", *mock.putInput.Bucket)
+	// The last upload is the legacy copy; both are covered by
+	// TestSave_WritesBothLayoutsWithHost.
 	assert.Equal(t, "pfx/acme/infra/42/default/modules/vpc/test.tfplan", *mock.putInput.Key)
 	assert.Equal(t, []byte("plan-content"), mock.putBody)
 	assert.Equal(t, "abc123def456", mock.putInput.Metadata["head-commit"])
@@ -256,7 +260,7 @@ func TestRemove_Success(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "my-bucket", *mock.deleteInput.Bucket)
-	assert.Equal(t, "pfx/acme/infra/42/default/modules/vpc/test.tfplan", *mock.deleteInput.Key)
+	assert.Equal(t, "pfx/@v2/github.com/acme/infra/42/default/modules/vpc/test.tfplan", *mock.deleteInput.Key)
 
 	_, statErr := os.Stat(planPath)
 	assert.True(t, os.IsNotExist(statErr))
@@ -282,7 +286,7 @@ func TestDeletePlanForProject_S3Error(t *testing.T) {
 	mock := &mockS3Client{deleteErr: errors.New("forbidden")}
 	store := planstore.NewS3PlanStoreWithClient(mock, "bucket", "pfx", logging.NewNoopLogger(t))
 
-	err := store.DeletePlanForProject("acme", "infra", 42, "default", "dir", "")
+	err := store.DeletePlanForProject(models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42, "default", "dir", "", nil)
 	require.ErrorIs(t, err, planstore.ErrNotDeleted)
 	assert.ErrorContains(t, err, "forbidden")
 }
@@ -291,7 +295,7 @@ func TestDeletePlanForProject_S3Error(t *testing.T) {
 // the bucket.
 func TestDeleteErrorsAreCounted(t *testing.T) {
 	mock := &mockS3Client{
-		listOutput: &s3.ListObjectsV2Output{Contents: []s3types.Object{{Key: aws.String("acme/infra/42/default/plan.tfplan")}}},
+		listOutput: &s3.ListObjectsV2Output{Contents: []s3types.Object{{Key: aws.String("@v2/github.com/acme/infra/42/default/plan.tfplan")}}},
 		deleteErr:  errors.New("forbidden"),
 	}
 	store := planstore.NewS3PlanStoreWithClient(mock, "bucket", "", logging.NewNoopLogger(t))
@@ -299,8 +303,8 @@ func TestDeleteErrorsAreCounted(t *testing.T) {
 	store.SetScope(scope)
 
 	_ = store.Remove(testProjectContext(), filepath.Join(t.TempDir(), "gone.tfplan"))
-	_ = store.DeletePlanForProject("acme", "infra", 42, "default", "dir", "")
-	_ = store.DeleteForPull("acme", "infra", 42)
+	_ = store.DeletePlanForProject(models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42, "default", "dir", "", nil)
+	_ = store.DeleteForPull(models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42, nil)
 
 	counter, ok := scope.Snapshot().Counters()["delete_errors_total+"]
 	require.True(t, ok, "delete_errors_total was not reported")
@@ -320,20 +324,20 @@ func TestRestorePlans_Success(t *testing.T) {
 	mock := &mockS3Client{
 		listOutput: &s3.ListObjectsV2Output{
 			Contents: []s3types.Object{
-				{Key: aws.String("pfx/acme/infra/42/default/modules/vpc/plan.tfplan")},
-				{Key: aws.String("pfx/acme/infra/42/staging/modules/rds/plan.tfplan")},
-				{Key: aws.String("pfx/acme/infra/42/default/some-other-file.txt")}, // not a .tfplan — skipped
+				{Key: aws.String("pfx/@v2/github.com/acme/infra/42/default/modules/vpc/plan.tfplan")},
+				{Key: aws.String("pfx/@v2/github.com/acme/infra/42/staging/modules/rds/plan.tfplan")},
+				{Key: aws.String("pfx/@v2/github.com/acme/infra/42/default/some-other-file.txt")}, // not a .tfplan — skipped
 			},
 		},
 		getObjects: map[string][]byte{
-			"pfx/acme/infra/42/default/modules/vpc/plan.tfplan": []byte("plan-vpc"),
-			"pfx/acme/infra/42/staging/modules/rds/plan.tfplan": []byte("plan-rds"),
+			"pfx/@v2/github.com/acme/infra/42/default/modules/vpc/plan.tfplan": []byte("plan-vpc"),
+			"pfx/@v2/github.com/acme/infra/42/staging/modules/rds/plan.tfplan": []byte("plan-rds"),
 		},
 	}
 	store := planstore.NewS3PlanStoreWithClient(mock, "bucket", "pfx", logging.NewNoopLogger(t))
 	pullDir := t.TempDir()
 
-	err := store.RestorePlans(pullDir, "acme", "infra", 42)
+	err := store.RestorePlans(pullDir, models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42)
 	require.NoError(t, err)
 
 	// Verify files were written to the correct paths.
@@ -352,17 +356,17 @@ func TestRestorePlans_DestinationDoesNotExist(t *testing.T) {
 	mock := &mockS3Client{
 		listOutput: &s3.ListObjectsV2Output{
 			Contents: []s3types.Object{
-				{Key: aws.String("pfx/acme/infra/42/default/modules/vpc/plan.tfplan")},
+				{Key: aws.String("pfx/@v2/github.com/acme/infra/42/default/modules/vpc/plan.tfplan")},
 			},
 		},
 		getObjects: map[string][]byte{
-			"pfx/acme/infra/42/default/modules/vpc/plan.tfplan": []byte("plan-vpc"),
+			"pfx/@v2/github.com/acme/infra/42/default/modules/vpc/plan.tfplan": []byte("plan-vpc"),
 		},
 	}
 	store := planstore.NewS3PlanStoreWithClient(mock, "bucket", "pfx", logging.NewNoopLogger(t))
 	pullDir := filepath.Join(t.TempDir(), "planstore", "repos", "acme", "infra", "42")
 
-	err := store.RestorePlans(pullDir, "acme", "infra", 42)
+	err := store.RestorePlans(pullDir, models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42)
 	require.NoError(t, err)
 
 	got, err := os.ReadFile(filepath.Join(pullDir, "default", "modules", "vpc", "plan.tfplan"))
@@ -378,7 +382,7 @@ func TestRestorePlans_NoPlansFound(t *testing.T) {
 	}
 	store := planstore.NewS3PlanStoreWithClient(mock, "bucket", "pfx", logging.NewNoopLogger(t))
 
-	err := store.RestorePlans(t.TempDir(), "acme", "infra", 42)
+	err := store.RestorePlans(t.TempDir(), models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42)
 	require.NoError(t, err)
 }
 
@@ -386,7 +390,7 @@ func TestRestorePlans_ListError(t *testing.T) {
 	mock := &mockS3Client{listErr: errors.New("access denied")}
 	store := planstore.NewS3PlanStoreWithClient(mock, "bucket", "pfx", logging.NewNoopLogger(t))
 
-	err := store.RestorePlans(t.TempDir(), "acme", "infra", 42)
+	err := store.RestorePlans(t.TempDir(), models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42)
 	assert.ErrorContains(t, err, "access denied")
 }
 
@@ -394,17 +398,17 @@ func TestRestorePlans_WithoutPrefix(t *testing.T) {
 	mock := &mockS3Client{
 		listOutput: &s3.ListObjectsV2Output{
 			Contents: []s3types.Object{
-				{Key: aws.String("acme/infra/42/default/plan.tfplan")},
+				{Key: aws.String("@v2/github.com/acme/infra/42/default/plan.tfplan")},
 			},
 		},
 		getObjects: map[string][]byte{
-			"acme/infra/42/default/plan.tfplan": []byte("plan-data"),
+			"@v2/github.com/acme/infra/42/default/plan.tfplan": []byte("plan-data"),
 		},
 	}
 	store := planstore.NewS3PlanStoreWithClient(mock, "bucket", "", logging.NewNoopLogger(t))
 	pullDir := t.TempDir()
 
-	err := store.RestorePlans(pullDir, "acme", "infra", 42)
+	err := store.RestorePlans(pullDir, models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42)
 	require.NoError(t, err)
 
 	got, err := os.ReadFile(filepath.Join(pullDir, "default", "plan.tfplan"))
@@ -416,19 +420,19 @@ func TestDeleteForPull_Success(t *testing.T) {
 	mock := &mockS3Client{
 		listOutput: &s3.ListObjectsV2Output{
 			Contents: []s3types.Object{
-				{Key: aws.String("pfx/acme/infra/42/default/modules/vpc/plan.tfplan")},
-				{Key: aws.String("pfx/acme/infra/42/staging/modules/rds/plan.tfplan")},
+				{Key: aws.String("pfx/@v2/github.com/acme/infra/42/default/modules/vpc/plan.tfplan")},
+				{Key: aws.String("pfx/@v2/github.com/acme/infra/42/staging/modules/rds/plan.tfplan")},
 			},
 		},
 	}
 	store := planstore.NewS3PlanStoreWithClient(mock, "bucket", "pfx", logging.NewNoopLogger(t))
 
-	err := store.DeleteForPull("acme", "infra", 42)
+	err := store.DeleteForPull(models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{
-		"pfx/acme/infra/42/default/modules/vpc/plan.tfplan",
-		"pfx/acme/infra/42/staging/modules/rds/plan.tfplan",
+		"pfx/@v2/github.com/acme/infra/42/default/modules/vpc/plan.tfplan",
+		"pfx/@v2/github.com/acme/infra/42/staging/modules/rds/plan.tfplan",
 	}, mock.deletedKeys)
 }
 
@@ -440,7 +444,7 @@ func TestDeleteForPull_NoObjects(t *testing.T) {
 	}
 	store := planstore.NewS3PlanStoreWithClient(mock, "bucket", "pfx", logging.NewNoopLogger(t))
 
-	err := store.DeleteForPull("acme", "infra", 42)
+	err := store.DeleteForPull(models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42, nil)
 	require.NoError(t, err)
 	assert.Empty(t, mock.deletedKeys)
 }
@@ -449,7 +453,7 @@ func TestDeleteForPull_ListError(t *testing.T) {
 	mock := &mockS3Client{listErr: errors.New("access denied")}
 	store := planstore.NewS3PlanStoreWithClient(mock, "bucket", "pfx", logging.NewNoopLogger(t))
 
-	err := store.DeleteForPull("acme", "infra", 42)
+	err := store.DeleteForPull(models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42, nil)
 	assert.ErrorContains(t, err, "access denied")
 }
 
@@ -457,7 +461,7 @@ func TestDeleteForPull_DeleteError(t *testing.T) {
 	mock := &mockS3Client{
 		listOutput: &s3.ListObjectsV2Output{
 			Contents: []s3types.Object{
-				{Key: aws.String("pfx/acme/infra/42/default/plan.tfplan")},
+				{Key: aws.String("pfx/@v2/github.com/acme/infra/42/default/plan.tfplan")},
 			},
 		},
 		deleteErr: errors.New("forbidden"),
@@ -466,7 +470,7 @@ func TestDeleteForPull_DeleteError(t *testing.T) {
 
 	// Every deletion is attempted and failures are reported, so the caller
 	// can warn that plans were left in the bucket.
-	err := store.DeleteForPull("acme", "infra", 42)
+	err := store.DeleteForPull(models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42, nil)
 	assert.ErrorContains(t, err, "forbidden")
 	assert.ErrorIs(t, err, planstore.ErrNotDeleted)
 }

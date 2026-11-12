@@ -39,3 +39,16 @@ func TestRunStepRefusesAfterPullLockLost(t *testing.T) {
 	Assert(t, errors.Is(err, ErrPullLockLost), "expected ErrPullLockLost, got %v", err)
 	Equals(t, 1, apply.calls)
 }
+
+// Deleting a pull's stored plans stops once its lock is lost; a locker that
+// can't lose it gives no fence.
+func TestPullFence(t *testing.T) {
+	Assert(t, pullFence(NewDefaultWorkingDirLocker(), models.Repo{}, 1) == nil, "a local locker needs no fence")
+	Assert(t, pullFence(nil, models.Repo{}, 1) == nil, "no locker needs no fence")
+
+	locker := &fencingLocker{WorkingDirLocker: NewDefaultWorkingDirLocker()}
+	fence := pullFence(locker, models.Repo{FullName: "org/repo"}, 1)
+	Ok(t, fence())
+	locker.lost = true
+	Assert(t, errors.Is(fence(), ErrPullLockLostCleanup), "expected ErrPullLockLostCleanup, got %v", fence())
+}

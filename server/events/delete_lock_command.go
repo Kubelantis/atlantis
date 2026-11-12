@@ -117,12 +117,12 @@ func (l *DefaultDeleteLockCommand) DeleteLock(logger logging.SimpleLogging, id s
 
 	if l.PlanStore != nil {
 		if err := l.PlanStore.DeletePlanForProject(
-			lock.Pull.BaseRepo.Owner,
-			lock.Pull.BaseRepo.Name,
+			lock.Pull.BaseRepo,
 			lock.Pull.Num,
 			lock.Workspace,
 			lock.Project.Path,
 			lock.Project.ProjectName,
+			pullFence(l.WorkingDirLocker, lock.Pull.BaseRepo, lock.Pull.Num),
 		); err != nil {
 			logger.Err("plan discarded, but not deleted from the plan store: %s", err)
 			return lock, &PlanStoreCleanupError{Err: err}
@@ -203,12 +203,10 @@ func (l *DefaultDeleteLockCommand) DeleteLocksByPull(logger logging.SimpleLoggin
 			logger.Warn("Failed to delete plan: %s", err)
 			errs = append(errs, err)
 		}
-		// Only this lock's stored plan: plan store keys do not include the
-		// VCS host, so deleting the pull's whole prefix could remove another
-		// provider's plans for a repo with the same name.
+		// Only this lock's stored plan, not the pull's: the lock is what
+		// was discarded.
 		if l.PlanStore != nil {
-			base := lock.Pull.BaseRepo
-			if err := l.PlanStore.DeletePlanForProject(base.Owner, base.Name, pullNum, lock.Workspace, lock.Project.Path, lock.Project.ProjectName); err != nil {
+			if err := l.PlanStore.DeletePlanForProject(lock.Pull.BaseRepo, pullNum, lock.Workspace, lock.Project.Path, lock.Project.ProjectName, pullFence(l.WorkingDirLocker, repo, pullNum)); err != nil {
 				logger.Err("plan discarded, but not deleted from the plan store: %s", err)
 				storeErrs = append(storeErrs, err)
 			}

@@ -4,6 +4,7 @@ package objstoretest
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"slices"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 
 	"github.com/runatlantis/atlantis/server/core/objstore"
 )
@@ -22,6 +24,8 @@ type Object struct {
 	Metadata   map[string]string
 	Encryption types.ServerSideEncryption
 	KMSKeyID   string
+	// ETag changes on every Put.
+	ETag string
 }
 
 // Fake is an in-memory objstore.API. PageSize bounds list pages (default 2)
@@ -31,6 +35,10 @@ type Fake struct {
 	Objects  map[string]Object
 	PageSize int
 	Err      error
+	// BeforeDelete, if set, runs at the start of every DeleteObject, so a
+	// test can change the bucket between a read and a delete.
+	BeforeDelete func(key string)
+	puts         int
 }
 
 var _ objstore.API = (*Fake)(nil)
@@ -52,7 +60,7 @@ func (f *Fake) HeadObject(_ context.Context, in *s3.HeadObjectInput, _ ...func(*
 	if !ok {
 		return nil, &types.NotFound{}
 	}
-	return &s3.HeadObjectOutput{Metadata: o.Metadata, ContentLength: aws.Int64(int64(len(o.Body)))}, nil
+	return &s3.HeadObjectOutput{Metadata: o.Metadata, ETag: aws.String(o.ETag), ContentLength: aws.Int64(int64(len(o.Body)))}, nil
 }
 
 func (f *Fake) PutObject(_ context.Context, in *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
@@ -65,7 +73,8 @@ func (f *Fake) PutObject(_ context.Context, in *s3.PutObjectInput, _ ...func(*s3
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.Objects[aws.ToString(in.Key)] = Object{Body: body, Metadata: in.Metadata, Encryption: in.ServerSideEncryption, KMSKeyID: aws.ToString(in.SSEKMSKeyId)}
+	f.puts++
+	f.Objects[aws.ToString(in.Key)] = Object{Body: body, Metadata: in.Metadata, Encryption: in.ServerSideEncryption, KMSKeyID: aws.ToString(in.SSEKMSKeyId), ETag: fmt.Sprintf("%q", fmt.Sprint("etag-", f.puts))}
 	return &s3.PutObjectOutput{}, nil
 }
 
@@ -83,10 +92,21 @@ func (f *Fake) GetObject(_ context.Context, in *s3.GetObjectInput, _ ...func(*s3
 }
 
 func (f *Fake) DeleteObject(_ context.Context, in *s3.DeleteObjectInput, _ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
+	if f.BeforeDelete != nil {
+		f.BeforeDelete(aws.ToString(in.Key))
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.Err != nil {
 		return nil, f.Err
+	}
+	// Like S3, a conditional delete fails on a missing or changed object.
+	o, ok := f.Objects[aws.ToString(in.Key)]
+	if in.IfMatch != nil && !ok {
+		return nil, &types.NoSuchKey{}
+	}
+	if ok && in.IfMatch != nil && aws.ToString(in.IfMatch) != o.ETag {
+		return nil, &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "At least one of the pre-conditions you specified did not hold"}
 	}
 	delete(f.Objects, aws.ToString(in.Key))
 	return &s3.DeleteObjectOutput{}, nil

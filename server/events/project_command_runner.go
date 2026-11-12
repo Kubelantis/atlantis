@@ -16,6 +16,7 @@ import (
 
 	"github.com/runatlantis/atlantis/server/core/config/valid"
 	"github.com/runatlantis/atlantis/server/core/planrisk"
+	"github.com/runatlantis/atlantis/server/core/planstore"
 	"github.com/runatlantis/atlantis/server/core/runtime"
 	"github.com/runatlantis/atlantis/server/events/command"
 	"github.com/runatlantis/atlantis/server/events/models"
@@ -1097,6 +1098,26 @@ type PullLockFencer interface {
 // ErrPullLockLost is returned instead of running a step after this replica
 // lost the pull's lock to another replica.
 var ErrPullLockLost = errors.New("this Atlantis replica lost the pull request's lock to another replica, so the remaining steps were not started. Re-run the command")
+
+// ErrPullLockLostCleanup is returned when deleting a pull's plans, locks or
+// status stops because this replica lost the pull's lock: they may be the new
+// holder's.
+var ErrPullLockLostCleanup = errors.New("this Atlantis replica lost the pull request's lock to another replica, so it stopped cleaning up the pull request")
+
+// pullFence returns a plan store fence that fails once locker reports the
+// pull's lock lost, or nil if locker can't lose it.
+func pullFence(locker WorkingDirLocker, repo models.Repo, pullNum int) planstore.Fence {
+	fencer, ok := locker.(PullLockFencer)
+	if !ok {
+		return nil
+	}
+	return func() error {
+		if fencer.LostPullLock(repo, pullNum) {
+			return ErrPullLockLostCleanup
+		}
+		return nil
+	}
+}
 
 // runStep runs a single workflow step inside its own trace span.
 func (p *DefaultProjectCommandRunner) runStep(step valid.Step, ctx command.ProjectContext, absPath string, envs map[string]string) (out string, err error) {

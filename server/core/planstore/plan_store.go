@@ -11,6 +11,7 @@ import (
 	"strconv"
 
 	"github.com/runatlantis/atlantis/server/events/command"
+	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/runatlantis/atlantis/server/utils"
 )
 
@@ -29,6 +30,11 @@ func PullDir(root, repoFullName string, pullNum int) string {
 // distinguish this from actual restore failures.
 var ErrRestoreNotSupported = errors.New("plan store does not support restore")
 
+// Fence reports an error once the caller can no longer trust that it holds the
+// pull, for example after losing its pull Lease to another replica. Deletes
+// check it and stop: the plans are the new holder's now. Nil means no check.
+type Fence func() error
+
 // PlanStore abstracts plan file persistence.
 // LocalPlanStore wraps current filesystem behavior (Save/Load are no-ops).
 // S3PlanStore uploads after plan and downloads before apply.
@@ -45,7 +51,7 @@ type PlanStore interface {
 	// (Clone falls through to forceClone which os.RemoveAll's the target dir,
 	// wiping any restored plan files). Implementations that don't support
 	// restore should return (nil, nil).
-	ListWorkspaces(owner, repo string, pullNum int) ([]string, error)
+	ListWorkspaces(repo models.Repo, pullNum int) ([]string, error)
 	// RestorePlans discovers and downloads all plans for a pull request into
 	// pullDir. Only used by the "apply all" path (buildAllProjectCommandsByPlan)
 	// where the set of planned projects is unknown. Targeted apply does not
@@ -58,13 +64,13 @@ type PlanStore interface {
 	// whether the implementation supports restore at all. Implementations that
 	// don't support restore MUST return ErrRestoreNotSupported. Implementations
 	// that do support restore MUST treat empty pullDir as a no-op (return nil).
-	RestorePlans(pullDir, owner, repo string, pullNum int) error
+	RestorePlans(pullDir string, repo models.Repo, pullNum int) error
 	// DeleteForPull removes all stored plan files for a pull request.
 	// Called during PR close/merge cleanup.
-	DeleteForPull(owner, repo string, pullNum int) error
+	DeleteForPull(repo models.Repo, pullNum int, fence Fence) error
 	// DeletePlanForProject removes a specific project's plan from external storage.
 	// Called when a single lock is deleted via the UI or API.
-	DeletePlanForProject(owner, repo string, pullNum int, workspace, repoRelDir, projectName string) error
+	DeletePlanForProject(repo models.Repo, pullNum int, workspace, repoRelDir, projectName string, fence Fence) error
 }
 
 // LocalPlanStore implements PlanStore using the local filesystem.
@@ -93,11 +99,11 @@ func (s *LocalPlanStore) Remove(_ command.ProjectContext, planPath string) error
 // ListWorkspaces reports the workspaces that still have plans on disk in a
 // separate plan store dir. Without one there is no inventory to read, because
 // the plans went away with the checkout.
-func (s *LocalPlanStore) ListWorkspaces(owner, repo string, pullNum int) ([]string, error) {
+func (s *LocalPlanStore) ListWorkspaces(repo models.Repo, pullNum int) ([]string, error) {
 	if s.SeparatePlanDir == "" {
 		return nil, nil
 	}
-	pullDir := PullDir(s.SeparatePlanDir, filepath.Join(owner, repo), pullNum)
+	pullDir := PullDir(s.SeparatePlanDir, filepath.Join(repo.Owner, repo.Name), pullNum)
 	entries, err := os.ReadDir(pullDir)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -125,7 +131,7 @@ func (s *LocalPlanStore) ListWorkspaces(owner, repo string, pullNum int) ([]stri
 // RestorePlans has nothing to fetch: with a separate plan store dir the plans
 // are already on disk, untouched by the loss of the checkout. It only needs to
 // report that recovery is possible at all.
-func (s *LocalPlanStore) RestorePlans(_, _, _ string, _ int) error {
+func (s *LocalPlanStore) RestorePlans(_ string, _ models.Repo, _ int) error {
 	if s.SeparatePlanDir == "" {
 		return ErrRestoreNotSupported
 	}
@@ -159,10 +165,10 @@ func containsPlanFile(dir string) (bool, error) {
 	return found, nil
 }
 
-func (s *LocalPlanStore) DeleteForPull(_, _ string, _ int) error {
+func (s *LocalPlanStore) DeleteForPull(_ models.Repo, _ int, _ Fence) error {
 	return nil // no-op: working dir deletion handles local files
 }
 
-func (s *LocalPlanStore) DeletePlanForProject(_, _ string, _ int, _, _, _ string) error {
+func (s *LocalPlanStore) DeletePlanForProject(_ models.Repo, _ int, _, _, _ string, _ Fence) error {
 	return nil // no-op: local plan deleted by WorkingDir.DeletePlan
 }

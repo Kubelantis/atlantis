@@ -6,7 +6,9 @@ package events_test
 
 import (
 	"errors"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 
 	. "github.com/petergtz/pegomock/v4"
 	lockmocks "github.com/runatlantis/atlantis/server/core/locking/mocks"
+	"github.com/runatlantis/atlantis/server/core/planstore"
 	"github.com/runatlantis/atlantis/server/events"
 	"github.com/runatlantis/atlantis/server/events/command"
 	"github.com/runatlantis/atlantis/server/events/mocks"
@@ -398,15 +401,15 @@ type countingPlanStore struct {
 func (s *countingPlanStore) Save(command.ProjectContext, string) error   { return nil }
 func (s *countingPlanStore) Load(command.ProjectContext, string) error   { return nil }
 func (s *countingPlanStore) Remove(command.ProjectContext, string) error { return nil }
-func (s *countingPlanStore) ListWorkspaces(string, string, int) ([]string, error) {
+func (s *countingPlanStore) ListWorkspaces(models.Repo, int) ([]string, error) {
 	return nil, nil
 }
-func (s *countingPlanStore) RestorePlans(string, string, string, int) error { return nil }
-func (s *countingPlanStore) DeleteForPull(string, string, int) error {
+func (s *countingPlanStore) RestorePlans(string, models.Repo, int) error { return nil }
+func (s *countingPlanStore) DeleteForPull(models.Repo, int, planstore.Fence) error {
 	s.deleteForPullCalls++
 	return nil
 }
-func (s *countingPlanStore) DeletePlanForProject(string, string, int, string, string, string) error {
+func (s *countingPlanStore) DeletePlanForProject(models.Repo, int, string, string, string, planstore.Fence) error {
 	return nil
 }
 
@@ -528,4 +531,132 @@ func TestCleanUpPullSkipsReopenedPull(t *testing.T) {
 	Equals(t, 0, len(closed))
 	Ok(t, pce.CleanUpPull(logger, testdata.GithubRepo, testdata.Pull))
 	w.VerifyWasCalled(Never()).Delete(Any[logging.SimpleLogging](), Any[models.Repo](), Any[models.PullRequest]())
+}
+
+// losingLocker reports the pull's lock lost once lost is set.
+type losingLocker struct {
+	events.WorkingDirLocker
+	lost atomic.Bool
+}
+
+func (l *losingLocker) LostPullLock(models.Repo, int) bool { return l.lost.Load() }
+
+// losingPlanStore returns err from deleting the pull's plans, or with no
+// err, loses the pull just after.
+type losingPlanStore struct {
+	countingPlanStore
+	locker *losingLocker
+	err    error
+}
+
+func (s *losingPlanStore) DeleteForPull(models.Repo, int, planstore.Fence) error {
+	s.deleteForPullCalls++
+	if s.err == nil {
+		s.locker.lost.Store(true)
+	}
+	return s.err
+}
+
+// Once this replica loses the pull, another may own it and have made fresh
+// locks and status, for example after a reopen: the cleanup stops instead of
+// deleting them, and the pull stays marked closed for a later sweep.
+func TestCleanUpPullStopsWhenThePullIsLost(t *testing.T) {
+	for name, storeErr := range map[string]error{
+		"lost while deleting plans": fmt.Errorf("deleting plans: %w", events.ErrPullLockLostCleanup),
+		"lost after deleting plans": nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			logger := logging.NewNoopLogger(t)
+			RegisterMockTestingT(t)
+			ctrl := gomock.NewController(t)
+			l := lockmocks.NewMockLocker(ctrl) // no calls expected: no lock is released
+			db := kubedbtest.New(t)
+			t.Cleanup(func() { db.Close() })
+			_, err := db.UpdatePullWithResults(testdata.Pull, nil)
+			Ok(t, err)
+			Ok(t, db.MarkPullClosed(testdata.Pull))
+			locker := &losingLocker{WorkingDirLocker: events.NewDefaultWorkingDirLocker()}
+			store := &losingPlanStore{locker: locker, err: storeErr}
+			pce := &events.PullClosedExecutor{
+				Locker:           l,
+				VCSClient:        vcsmocks.NewMockClient(),
+				WorkingDir:       mocks.NewMockWorkingDir(),
+				Database:         db,
+				WorkingDirLocker: locker,
+				Closed:           db,
+				PlanStore:        store,
+			}
+
+			err = pce.CleanUpPull(logger, testdata.GithubRepo, testdata.Pull)
+			Assert(t, errors.Is(err, events.ErrPullLockLostCleanup), "expected ErrPullLockLostCleanup, got %v", err)
+			Equals(t, 1, store.deleteForPullCalls)
+			status, err := db.GetPullStatus(testdata.Pull)
+			Ok(t, err)
+			Assert(t, status != nil, "the pull status was deleted")
+			closed, err := db.ClosedPulls()
+			Ok(t, err)
+			Equals(t, 1, len(closed))
+		})
+	}
+}
+
+// Ownership is checked before the first shared deletion too.
+func TestCleanUpPullStopsWhenThePullIsAlreadyLost(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	RegisterMockTestingT(t)
+	ctrl := gomock.NewController(t)
+	l := lockmocks.NewMockLocker(ctrl)
+	db := kubedbtest.New(t)
+	t.Cleanup(func() { db.Close() })
+	Ok(t, db.MarkPullClosed(testdata.Pull))
+	locker := &losingLocker{WorkingDirLocker: events.NewDefaultWorkingDirLocker()}
+	locker.lost.Store(true)
+	store := &countingPlanStore{}
+	jobsCleaner := mocks.NewMockResourceCleaner()
+	pce := &events.PullClosedExecutor{
+		Locker:                   l,
+		WorkingDir:               mocks.NewMockWorkingDir(),
+		Database:                 db,
+		WorkingDirLocker:         locker,
+		Closed:                   db,
+		PlanStore:                store,
+		LogStreamResourceCleaner: jobsCleaner,
+	}
+
+	err := pce.CleanUpPull(logger, testdata.GithubRepo, testdata.Pull)
+	Assert(t, errors.Is(err, events.ErrPullLockLostCleanup), "expected ErrPullLockLostCleanup, got %v", err)
+	Equals(t, 0, store.deleteForPullCalls)
+	jobsCleaner.VerifyWasCalled(Never()).CleanUp(Any[jobs.PullInfo]())
+}
+
+// A pull lost while its locks are released keeps its status.
+func TestCleanUpPullKeepsStatusWhenLostReleasingLocks(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	RegisterMockTestingT(t)
+	ctrl := gomock.NewController(t)
+	l := lockmocks.NewMockLocker(ctrl)
+	db := kubedbtest.New(t)
+	t.Cleanup(func() { db.Close() })
+	_, err := db.UpdatePullWithResults(testdata.Pull, nil)
+	Ok(t, err)
+	Ok(t, db.MarkPullClosed(testdata.Pull))
+	locker := &losingLocker{WorkingDirLocker: events.NewDefaultWorkingDirLocker()}
+	l.EXPECT().UnlockByPull(testdata.GithubRepo, testdata.Pull.Num).DoAndReturn(func(models.Repo, int) ([]models.ProjectLock, error) {
+		locker.lost.Store(true)
+		return nil, nil
+	})
+	pce := &events.PullClosedExecutor{
+		Locker:           l,
+		VCSClient:        vcsmocks.NewMockClient(),
+		WorkingDir:       mocks.NewMockWorkingDir(),
+		Database:         db,
+		WorkingDirLocker: locker,
+		Closed:           db,
+	}
+
+	err = pce.CleanUpPull(logger, testdata.GithubRepo, testdata.Pull)
+	Assert(t, errors.Is(err, events.ErrPullLockLostCleanup), "expected ErrPullLockLostCleanup, got %v", err)
+	status, err := db.GetPullStatus(testdata.Pull)
+	Ok(t, err)
+	Assert(t, status != nil, "the pull status was deleted")
 }

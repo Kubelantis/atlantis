@@ -517,19 +517,19 @@ type recordingPlanStore struct {
 	pulls    int
 }
 
-func (r *recordingPlanStore) DeletePlanForProject(owner, repo string, pullNum int, workspace, repoRelDir, projectName string) error {
-	r.projects = append(r.projects, fmt.Sprintf("%s|%s|%d|%s|%s|%s", owner, repo, pullNum, workspace, repoRelDir, projectName))
+func (r *recordingPlanStore) DeletePlanForProject(repo models.Repo, pullNum int, workspace, repoRelDir, projectName string, _ planstore.Fence) error {
+	r.projects = append(r.projects, fmt.Sprintf("%s|%s|%d|%s|%s|%s", repo.Owner, repo.Name, pullNum, workspace, repoRelDir, projectName))
 	return nil
 }
 
-func (r *recordingPlanStore) DeleteForPull(string, string, int) error {
+func (r *recordingPlanStore) DeleteForPull(models.Repo, int, planstore.Fence) error {
 	r.pulls++
 	return nil
 }
 
-// Plan store keys do not include the VCS host, so the unlock deletes only the
-// stored plans of the locks it released, by the repo's owner and name (which
-// for a GitLab subgroup differ from splitting the full name at the first /).
+// The unlock deletes only the stored plans of the locks it released, by the
+// pull's repo (whose owner and name, for a GitLab subgroup, differ from
+// splitting the full name at the first /).
 func TestDeleteLocksByPull_DeletesOnlyReleasedPlansFromStore(t *testing.T) {
 	logger := logging.NewNoopLogger(t)
 	RegisterMockTestingT(t)
@@ -617,7 +617,7 @@ func TestDeleteLock_LockAlreadyReleased(t *testing.T) {
 // failingPlanStore fails every stored plan deletion.
 type failingPlanStore struct{ planstore.PlanStore }
 
-func (failingPlanStore) DeletePlanForProject(string, string, int, string, string, string) error {
+func (failingPlanStore) DeletePlanForProject(models.Repo, int, string, string, string, planstore.Fence) error {
 	return fmt.Errorf("deleting plan from S3: %w: forbidden", planstore.ErrNotDeleted)
 }
 
