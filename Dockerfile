@@ -279,7 +279,7 @@ ENV CA_CERTIFICATES_VERSION="20261020-r0"
 # renovate: datasource=apk depName=curl
 ENV CURL_VERSION="8.23.0-r0"
 # renovate: datasource=apk depName=git
-ENV GIT_VERSION="2.54.0-r0"
+ENV GIT_VERSION="2.54.1-r0"
 # renovate: datasource=apk depName=unzip
 ENV UNZIP_VERSION="6.0-r16"
 # renovate: datasource=apk depName=bash
@@ -360,7 +360,7 @@ COPY --from=tf-deps /usr/local/bin/tofu/tofu* /usr/local/bin/
 # target, which carries no bundled toolchains.
 ARG CDKTN_VERSION
 # renovate: datasource=apk depName=nodejs
-ENV NODEJS_VERSION="24.22.1-r1"
+ENV NODEJS_VERSION="24.22.3-r0"
 # renovate: datasource=apk depName=npm
 ENV NPM_VERSION="11.12.1-r0"
 USER root
