@@ -254,6 +254,18 @@ func normalizePath(s string) string {
 	return s
 }
 
+// The websocket origin check is on by default (ADR 0005), and can still be
+// turned off.
+func TestExecute_WebsocketCheckOrigin(t *testing.T) {
+	c := setupWithDefaults(map[string]any{}, t)
+	Ok(t, c.Execute())
+	Equals(t, true, passedConfig.WebsocketCheckOrigin)
+
+	c = setupWithDefaults(map[string]any{WebsocketCheckOrigin: false}, t)
+	Ok(t, c.Execute())
+	Equals(t, false, passedConfig.WebsocketCheckOrigin)
+}
+
 func TestNormalizePath(t *testing.T) {
 	tests := []struct {
 		name string

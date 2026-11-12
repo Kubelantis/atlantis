@@ -715,8 +715,9 @@ var boolFlags = map[string]boolFlag{
 		defaultValue: false,
 	},
 	WebsocketCheckOrigin: {
-		description:  "Enable websocket origin check",
-		defaultValue: false,
+		description: "Refuse job output websockets whose Origin host differs from the request's Host, against cross-site websocket hijacking." +
+			" On by default; set to false if a proxy rewrites Host or job pages are embedded in another site.",
+		defaultValue: true,
 	},
 	EnableDriftDetectionFlag: {
 		description:  "Enable drift detection API endpoints. Detection does not apply, but can run plan hooks and custom plan commands.",
