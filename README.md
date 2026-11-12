@@ -12,8 +12,8 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/runatlantis/atlantis)](https://goreportcard.com/report/github.com/runatlantis/atlantis)
 [![Go Reference](https://pkg.go.dev/badge/github.com/runatlantis/atlantis.svg)](https://pkg.go.dev/github.com/runatlantis/atlantis)
 [![Slack](https://img.shields.io/badge/Join-Atlantis%20Community%20Slack-red)](https://slack.cncf.io/)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/runatlantis/atlantis/badge)](https://scorecard.dev/viewer/?uri=github.com/runatlantis/atlantis)
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/9428/badge)](https://www.bestpractices.dev/projects/9428)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Kubelantis/atlantis/badge)](https://scorecard.dev/viewer/?uri=github.com/Kubelantis/atlantis)
+<!-- OpenSSF Best Practices: add the badge once this fork is registered at https://www.bestpractices.dev -->
 
 <p align="center">
   <img src="./runatlantis.io/public/hero.png" alt="Atlantis Logo"/><br><br>
