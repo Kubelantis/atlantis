@@ -6,6 +6,9 @@ env:
 builds:
   - id: atlantis
 
+    # The server runs only in Kubernetes, but `atlantis migrate-workflows`
+    # runs wherever operators edit their config: Linux and macOS. Windows
+    # isn't a target platform.
     targets:
       - darwin_amd64
       - darwin_arm64
@@ -13,8 +16,6 @@ builds:
       - linux_amd64
       - linux_arm
       - linux_arm64
-      - windows_386
-      - windows_amd64
 
     flags:
       - -trimpath
@@ -42,13 +43,8 @@ release:
   # Default is false.
   draft: false
 
-  # If set, will create a release discussion in the category specified.
-  #
-  # Warning: do not use categories in the 'Announcement' format.
-  #  Check https://github.com/goreleaser/goreleaser/issues/2304 for more info.
-  #
-  # Default is empty.
-  discussion_category_name: General
+  # No discussion_category_name: Discussions are disabled on this repository,
+  # and GitHub rejects a release update that names a category.
 
   # If set to auto, will mark the release as not ready for production
   # in case there is an indicator for this in the tag e.g. v1.0.0-rc1
@@ -64,4 +60,4 @@ release:
 #     artifacts: all
 
 snapshot:
-  name_template: "{{ incpatch .Version }}-next"
+  version_template: "{{ incpatch .Version }}-next"
