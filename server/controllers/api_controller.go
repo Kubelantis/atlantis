@@ -80,6 +80,10 @@ type APIController struct {
 	// cleanup is pending. A command on a pull request marked closed runs
 	// only if it was reopened; see events.CancelClosedCleanup.
 	ClosedPulls events.ClosedPullRecorder
+	// CommandTimeout, if positive, bounds how long an API command's processes
+	// run; see events.DefaultCommandRunner.CommandTimeout.
+	CommandTimeout      time.Duration
+	CommandTimeoutGrace time.Duration
 	// DriftWebhookSender sends webhook notifications when drift is detected.
 	// Nil when no drift webhooks are configured.
 	DriftWebhookSender *webhooks.DriftWebhookSender
@@ -422,6 +426,7 @@ func (a *APIController) Plan(w http.ResponseWriter, r *http.Request) {
 		a.apiReportLegacyError(w, code, err)
 		return
 	}
+	defer ctx.SetExecDeadline(a.CommandTimeout, a.CommandTimeoutGrace)()
 	done, ok := a.startOp(func(msg string) { a.apiReportLegacyError(w, http.StatusServiceUnavailable, errors.New(msg)) })
 	if !ok {
 		return
@@ -464,6 +469,7 @@ func (a *APIController) Apply(w http.ResponseWriter, r *http.Request) {
 		a.apiReportLegacyError(w, code, err)
 		return
 	}
+	defer ctx.SetExecDeadline(a.CommandTimeout, a.CommandTimeoutGrace)()
 	done, ok := a.startOp(func(msg string) { a.apiReportLegacyError(w, http.StatusServiceUnavailable, errors.New(msg)) })
 	if !ok {
 		return
@@ -1453,6 +1459,7 @@ func (e *apiRemediationExecutor) ExecutePlan(repository, ref, vcsType, projectNa
 		ExactProjectNameMatching:  true,
 		SortByExecutionOrder:      true,
 	}
+	defer ctx.SetExecDeadline(e.controller.CommandTimeout, e.controller.CommandTimeoutGrace)()
 
 	// Setup working directory
 	if err := e.controller.apiSetup(ctx, command.Plan); err != nil {
@@ -1534,6 +1541,7 @@ func (e *apiRemediationExecutor) ExecuteApplyProjects(repository, ref, vcsType s
 		ExactProjectNameMatching:  true,
 		SortByExecutionOrder:      true,
 	}
+	defer ctx.SetExecDeadline(e.controller.CommandTimeout, e.controller.CommandTimeoutGrace)()
 
 	if err := e.ensureApplyUnlocked(); err != nil {
 		return nil, err
@@ -1633,6 +1641,7 @@ func (e *apiRemediationExecutor) ExecuteApply(repository, ref, vcsType, projectN
 		ExactProjectNameMatching:  true,
 		SortByExecutionOrder:      true,
 	}
+	defer ctx.SetExecDeadline(e.controller.CommandTimeout, e.controller.CommandTimeoutGrace)()
 
 	if err := e.ensureApplyUnlocked(); err != nil {
 		return "", err
@@ -2379,6 +2388,7 @@ func (a *APIController) DetectDrift(w http.ResponseWriter, r *http.Request) {
 		ExactProjectNameMatching:  true,
 		SortByExecutionOrder:      true,
 	}
+	defer ctx.SetExecDeadline(a.CommandTimeout, a.CommandTimeoutGrace)()
 
 	// Setup working directory
 	if err := a.apiSetup(ctx, command.Plan); err != nil {

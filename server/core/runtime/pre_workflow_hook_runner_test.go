@@ -4,16 +4,19 @@
 package runtime_test
 
 import (
+	"errors"
 	"fmt"
 	goruntime "runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/go-version"
 	. "github.com/petergtz/pegomock/v4"
 	"github.com/runatlantis/atlantis/server/core/runtime"
 	tf "github.com/runatlantis/atlantis/server/core/terraform"
 	tfclientmocks "github.com/runatlantis/atlantis/server/core/terraform/tfclient/mocks"
+	"github.com/runatlantis/atlantis/server/events/command"
 	"github.com/runatlantis/atlantis/server/events/models"
 	jobmocks "github.com/runatlantis/atlantis/server/jobs/mocks"
 	"github.com/runatlantis/atlantis/server/logging"
@@ -235,4 +238,25 @@ func TestPreWorkflowHookRunnerSuppressesJobOutput(t *testing.T) {
 
 	Ok(t, err)
 	projectCmdOutputHandler.VerifyWasCalled(Never()).SendWorkflowHook(Any[models.WorkflowHookCommandContext](), Any[string](), Any[bool]())
+}
+
+// A workflow hook still running at its command's deadline is stopped, so a
+// hung hook doesn't hold the pull request.
+func TestPreWorkflowHookRunnerStopsAtCommandDeadline(t *testing.T) {
+	RegisterMockTestingT(t)
+	r := runtime.DefaultPreWorkflowHookRunner{OutputHandler: jobmocks.NewMockProjectCommandOutputHandler()}
+	execCtx, cancel := command.WithExecDeadline(200*time.Millisecond, time.Minute)
+	defer cancel()
+	ctx := models.WorkflowHookCommandContext{
+		Log:               logging.NewNoopLogger(t),
+		CommandName:       "plan",
+		SuppressJobOutput: true,
+		ExecContext:       execCtx,
+	}
+
+	start := time.Now()
+	_, _, err := r.Run(ctx, "sleep 30", "sh", "-c", t.TempDir())
+
+	Assert(t, errors.Is(err, command.ErrTimedOut), "expected ErrTimedOut, got %v", err)
+	Assert(t, time.Since(start) < 10*time.Second, "expected the hook to stop at the deadline, took %s", time.Since(start))
 }

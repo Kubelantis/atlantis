@@ -5660,6 +5660,26 @@ func TestAPIController_PlanOnPullMarkedClosed(t *testing.T) {
 	}
 }
 
+// With --command-timeout-seconds set, an API command's processes are
+// bounded like a comment command's.
+func TestAPIController_PlanSetsCommandDeadline(t *testing.T) {
+	ac, projectCommandBuilder, _ := setup(t)
+	ac.CommandTimeout = time.Hour
+	ac.CommandTimeoutGrace = time.Minute
+
+	body, _ := json.Marshal(controllers.APIRequest{Repository: "Repo", Ref: "main", Type: "Gitlab", PR: 42, Projects: []string{"default"}})
+	req, _ := http.NewRequest("POST", "", bytes.NewBuffer(body))
+	req.Header.Set(atlantisTokenHeader, atlantisToken)
+	w := httptest.NewRecorder()
+	ac.Plan(w, req)
+
+	Equals(t, http.StatusOK, w.Code)
+	ctx, _ := projectCommandBuilder.VerifyWasCalledOnce().BuildPlanCommands(Any[*command.Context](), Any[*events.CommentCommand]()).GetCapturedArguments()
+	_, ok := ctx.ExecCtx().Deadline()
+	Assert(t, ok, "expected the API command to have a deadline")
+	Equals(t, time.Minute, command.ExecGrace(ctx.ExecCtx()))
+}
+
 // fakeApplyLock reports a fixed global apply lock state.
 type fakeApplyLock struct {
 	lock locking.ApplyCommandLock

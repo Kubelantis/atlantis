@@ -94,6 +94,8 @@ type UserConfig struct {
 	ClusterAddress                  string `mapstructure:"cluster-address"`
 	ClusterPort                     int    `mapstructure:"cluster-port"`
 	ClusterPlanHolderWaitSeconds    int    `mapstructure:"cluster-plan-holder-wait-seconds"`
+	CommandTimeoutSeconds           int    `mapstructure:"command-timeout-seconds"`
+	CommandTimeoutGraceSeconds      int    `mapstructure:"command-timeout-grace-seconds"`
 	ClusterToken                    string `mapstructure:"cluster-token"`
 	TracingEnabled                  bool   `mapstructure:"tracing-enabled"`
 	PlanRiskEnabled                 bool   `mapstructure:"plan-risk-enabled"`

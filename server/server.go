@@ -1012,6 +1012,8 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 	commandRunner := &events.DefaultCommandRunner{
 		ClosedPulls:                    closedPulls,
 		LivePullFetcher:                livePullHeadFetcher,
+		CommandTimeout:                 time.Duration(userConfig.CommandTimeoutSeconds) * time.Second,
+		CommandTimeoutGrace:            time.Duration(userConfig.CommandTimeoutGraceSeconds) * time.Second,
 		VCSClient:                      vcsClient,
 		GithubPullGetter:               githubClient,
 		GitlabMergeRequestGetter:       gitlabClient,
@@ -1099,6 +1101,8 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		PullStatusFetcher:               database,
 		LivePullHeadFetcher:             livePullHeadFetcher,
 		ClosedPulls:                     closedPulls,
+		CommandTimeout:                  time.Duration(userConfig.CommandTimeoutSeconds) * time.Second,
+		CommandTimeoutGrace:             time.Duration(userConfig.CommandTimeoutGraceSeconds) * time.Second,
 		SilenceVCSStatusNoProjects:      userConfig.SilenceVCSStatusNoProjects,
 	}
 

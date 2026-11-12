@@ -121,6 +121,8 @@ const (
 	ClusterAddressFlag               = "cluster-address"
 	ClusterPortFlag                  = "cluster-port"
 	ClusterPlanHolderWaitFlag        = "cluster-plan-holder-wait-seconds"
+	CommandTimeoutFlag               = "command-timeout-seconds"
+	CommandTimeoutGraceFlag          = "command-timeout-grace-seconds"
 	ClusterTokenFlag                 = "cluster-token" // nolint: gosec
 	TracingEnabledFlag               = "tracing-enabled"
 	PlanRiskEnabledFlag              = "plan-risk-enabled"
@@ -195,6 +197,7 @@ const (
 	DefaultGitlabHostname               = "gitlab.com"
 	DefaultClusterPort                  = 4142
 	DefaultClusterPlanHolderWait        = 180
+	DefaultCommandTimeoutGrace          = 300
 	DefaultPlanRiskFailureTier          = "high"
 	DefaultPlanRiskMaxUnapprovedTier    = "low"
 	DefaultTypeSafeAPIURL               = "https://api.typesafe.ai"
@@ -736,6 +739,17 @@ var boolFlags = map[string]boolFlag{
 	},
 }
 var intFlags = map[string]intFlag{
+	CommandTimeoutFlag: {
+		description: "Bound how long a command (a comment command, autoplan or API request) can run, in seconds. 0, the default, means no limit." +
+			" At the limit, the processes its steps and workflow hooks run are interrupted, and steps not yet started are skipped; the command reports the timeout and releases its locks." +
+			fmt.Sprintf(" Processes still running --%s later are killed.", CommandTimeoutGraceFlag),
+		defaultValue: 0,
+	},
+	CommandTimeoutGraceFlag: {
+		description: fmt.Sprintf("Used only if --%s is set.", CommandTimeoutFlag) +
+			" How many seconds an interrupted process has to exit before it is killed. Terraform uses this time to stop cleanly, save state and release its state lock.",
+		defaultValue: DefaultCommandTimeoutGrace,
+	},
 	ClusterPlanHolderWaitFlag: {
 		description: "When no external plan store is configured, applies run on the replica that made the plan." +
 			" If that replica is restarting, wait this many seconds for it to return before running the apply elsewhere. A negative value disables waiting.",
@@ -1114,6 +1128,9 @@ func (s *ServerCmd) setDefaults(c *server.UserConfig, v *viper.Viper) {
 	if c.ClusterPlanHolderWaitSeconds == 0 {
 		c.ClusterPlanHolderWaitSeconds = DefaultClusterPlanHolderWait
 	}
+	if c.CommandTimeoutGraceSeconds == 0 {
+		c.CommandTimeoutGraceSeconds = DefaultCommandTimeoutGrace
+	}
 	if c.PlanRiskFailureTier == "" {
 		c.PlanRiskFailureTier = DefaultPlanRiskFailureTier
 	}
@@ -1191,6 +1208,13 @@ func (s *ServerCmd) validate(userConfig server.UserConfig) error {
 		if err := i18n.ValidateCustomCatalog(userConfig.LanguageConfigFile); err != nil {
 			return err
 		}
+	}
+
+	if userConfig.CommandTimeoutSeconds < 0 {
+		return fmt.Errorf("--%s must not be negative", CommandTimeoutFlag)
+	}
+	if userConfig.CommandTimeoutGraceSeconds < 0 {
+		return fmt.Errorf("--%s must not be negative", CommandTimeoutGraceFlag)
 	}
 
 	if userConfig.DefaultTFDistribution != TFDistributionTerraform && userConfig.DefaultTFDistribution != TFDistributionOpenTofu {

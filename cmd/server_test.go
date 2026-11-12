@@ -117,6 +117,8 @@ var testFlags = map[string]any{
 	ClusterAddressFlag:               "http://10.0.0.1:4142",
 	ClusterPortFlag:                  4143,
 	ClusterPlanHolderWaitFlag:        60,
+	CommandTimeoutFlag:               7200,
+	CommandTimeoutGraceFlag:          120,
 	ClusterTokenFlag:                 "cluster-token",
 	TracingEnabledFlag:               true,
 	PlanRiskEnabledFlag:              true,
@@ -656,6 +658,26 @@ func TestExecute_ValidateCheckoutStrategy(t *testing.T) {
 	}, t)
 	err := c.Execute()
 	ErrEquals(t, "invalid checkout strategy: not one of branch or merge", err)
+}
+
+// Commands have no time limit by default, and an interrupted process gets
+// five minutes to exit.
+func TestExecute_CommandTimeoutDefaults(t *testing.T) {
+	c := setupWithDefaults(map[string]any{
+		GHUserFlag:        "user",
+		GHTokenFlag:       "token",
+		RepoAllowlistFlag: "*",
+	}, t)
+	Ok(t, c.Execute())
+	Equals(t, 0, passedConfig.CommandTimeoutSeconds)
+	Equals(t, DefaultCommandTimeoutGrace, passedConfig.CommandTimeoutGraceSeconds)
+}
+
+func TestExecute_ValidateCommandTimeout(t *testing.T) {
+	for _, flag := range []string{CommandTimeoutFlag, CommandTimeoutGraceFlag} {
+		c := setupWithDefaults(map[string]any{flag: -1}, t)
+		ErrEquals(t, fmt.Sprintf("--%s must not be negative", flag), c.Execute())
+	}
 }
 
 func TestExecute_ValidateAutomergeMethod(t *testing.T) {

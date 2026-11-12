@@ -28,6 +28,10 @@ type Context struct {
 	// TraceContext carries the active trace span for this command. It is
 	// never cancelled; use Ctx() to read it.
 	TraceContext context.Context
+	// ExecContext bounds the processes the command's steps run: they are
+	// stopped when it reaches its deadline (see WithExecDeadline). Unlike
+	// TraceContext it is never cancelled by a caller. Use ExecCtx() to read it.
+	ExecContext context.Context
 	// HeadRepo is the repository that is getting merged into the BaseRepo.
 	// If the pull request branch is from the same repository then HeadRepo will
 	// be the same as BaseRepo.
