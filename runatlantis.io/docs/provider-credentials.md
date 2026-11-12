@@ -7,9 +7,10 @@ specific provider.
 
 It's up to you how you provide credentials for your specific provider to Atlantis:
 
-* The Atlantis [Helm Chart](deployment.md#kubernetes-helm-chart) and
-    [AWS Fargate Module](deployment.md#aws-fargate) have their own mechanisms for provider
-    credentials. Read their docs.
+* The Atlantis [Helm Chart](deployment.md#kubernetes-helm-chart) runs Atlantis with a
+    Kubernetes service account. Annotate it for your cloud's workload identity
+    (`serviceAccount.annotations`) to give Atlantis credentials without static keys; see
+    [Managed Kubernetes](deployment.md#managed-kubernetes-gke-eks-aks).
 * If you're running Atlantis in a cloud then many clouds have ways to give cloud API access
   to applications running on them, ex:
   * [AWS EC2 Roles](https://registry.terraform.io/providers/hashicorp/aws/latest/docs) (Search for "EC2 Role")

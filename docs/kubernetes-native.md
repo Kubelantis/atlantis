@@ -1,9 +1,10 @@
 # Kubernetes-native Atlantis
 
-This fork runs Atlantis as a highly available Deployment. Locks, pull status,
-membership and leader election are all stored as Kubernetes objects. It needs
-no BoltDB, Redis or persistent volume. The design and its trade-offs are in
-[ADR 0003](adr/0003-kubernetes-native-ha.md).
+This fork runs Atlantis as a highly available StatefulSet. Locks, pull status,
+membership and leader election are all stored as Kubernetes objects, so it
+needs no BoltDB or Redis. Each replica has its own volume for clones and plan
+files; configure a shared plan store (`externalStores`) so any replica can apply.
+The design and its trade-offs are in [ADR 0003](adr/0003-kubernetes-native-ha.md).
 
 ## Install
 

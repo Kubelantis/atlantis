@@ -12,9 +12,11 @@ This page covers getting Atlantis up and running in your infrastructure.
 
 ### Runtime
 
-Atlantis is a simple [Go](https://golang.org/) app. It receives webhooks from
-your Git host and executes Terraform commands locally. There is an official
-Atlantis [Docker image](https://ghcr.io/runatlantis/atlantis).
+Atlantis is a [Go](https://golang.org/) app. It receives webhooks from your Git
+host and executes Terraform commands locally. This fork runs only in Kubernetes:
+it keeps locks, pull request status and cluster membership in the Kubernetes
+API, so several replicas can run at once. Its image is
+`ghcr.io/kubelantis/katlantis` (see [Docker image](#docker-image)).
 
 ### Routing
 
@@ -34,16 +36,16 @@ to re-run `plan`. To keep plans available to every replica, configure a shared p
 
 ## Deployment
 
-Pick your deployment type:
+Atlantis is installed with its [Helm chart](#kubernetes-helm-chart). The
+server refuses to start outside Kubernetes, so upstream Atlantis's other
+deployment options (a single container, a VM, AWS Fargate, Azure Container
+Instances) don't apply to this fork.
 
 * [Kubernetes Helm Chart](#kubernetes-helm-chart)
-* [Kubernetes Manifests](#kubernetes-manifests)
-* [Kubernetes Kustomize](#kubernetes-kustomize)
+* [Plain manifests](#plain-manifests)
 * [OpenShift](#openshift)
-* [AWS Fargate](#aws-fargate)
-* [Google Kubernetes Engine (GKE)](#google-kubernetes-engine-gke)
-* [Docker](#docker)
-* [Roll Your Own](#roll-your-own)
+* [Managed Kubernetes (GKE, EKS, AKS)](#managed-kubernetes-gke-eks-aks)
+* [Docker image](#docker-image)
 
 ### Kubernetes Helm Chart
 
@@ -58,7 +60,7 @@ To install:
     cd katlantis
     ```
 
-1. Build the Atlantis image from it and push it to a registry your cluster can pull from. This fork doesn't publish a release image yet, and upstream Atlantis images don't include its Kubernetes-native code. The `alpine` target is the default image; `debian` and the `-slim` variants are the others (see [Image variants](#image-variants)):
+1. Choose the image. The chart defaults to `ghcr.io/kubelantis/katlantis` with the tag `v` + the chart's `appVersion`, which exists once that release is published. Until then, set `image.tag` to a tag published from `master`, such as `dev-alpine-<commit>` (see [Image variants](#image-variants)). Or build the image yourself and push it to a registry your cluster can pull from. Upstream Atlantis images don't include this fork's Kubernetes-native code:
 
     ```bash
     docker build --target alpine -t registry.example.com/atlantis:my-tag .
@@ -75,7 +77,7 @@ To install:
       --from-literal=ATLANTIS_GH_WEBHOOK_SECRET=...
     ```
 
-1. Create a `values.yaml` that sets the image, names the Secret, and sets your URL and [repo allowlist](server-configuration.md#repo-allowlist):
+1. Create a `values.yaml` that names the Secret, sets your URL and [repo allowlist](server-configuration.md#repo-allowlist), and, unless you use the chart's default, the image:
 
     ```yaml
     image:
@@ -97,538 +99,60 @@ To install:
 Atlantis should be up and running in minutes! See [Next Steps](#next-steps) for
 what to do next.
 
-### Kubernetes Manifests
+### Plain manifests
 
-If you'd like to use a raw Kubernetes manifest, we offer either a
-[Deployment](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/)
-or a [Statefulset](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/) with persistent storage.
-
-StatefulSet is recommended because Atlantis stores its data on disk and so if your Pod dies
-or you upgrade Atlantis, you won't lose plans that haven't been applied. If
-you do lose that data, you just need to run `atlantis plan` again so it's not the end of the world.
-
-Regardless of whether you choose a Deployment or StatefulSet, first create a Secret with the webhook secret and access token:
+To deploy with plain manifests, for example through a GitOps tool that doesn't
+render Helm charts, render the chart with your values and apply the result:
 
 ```bash
-echo -n "yourtoken" > token
-echo -n "yoursecret" > webhook-secret
-kubectl create secret generic atlantis-vcs --from-file=token --from-file=webhook-secret
+helm template atlantis deploy/helm/atlantis -n atlantis -f values.yaml --include-crds > atlantis.yaml
 ```
 
-Next, edit the manifests below as follows:
-
-1. Replace `<VERSION>` in `image: ghcr.io/runatlantis/atlantis:<VERSION>` with the most recent version from [GitHub: Atlantis latest release](https://github.com/runatlantis/atlantis/releases/latest).
-    * NOTE: You never want to run with `:latest` because if your Pod moves to a new node, Kubernetes will pull the latest image and you might end
-up upgrading Atlantis by accident!
-2. Replace `value: github.com/yourorg/*` under `name: ATLANTIS_REPO_ALLOWLIST` with the allowlist pattern
-for your Terraform repos. See [--repo-allowlist](server-configuration.md#repo-allowlist) for more details.
-3. If you're using GitHub:
-    1. Replace `<YOUR_GITHUB_USER>` with the username of your Atlantis GitHub user without the `@`.
-    2. Delete all the `ATLANTIS_GITLAB_*`, `ATLANTIS_GITEA_*`, `ATLANTIS_BITBUCKET_*`, and `ATLANTIS_AZUREDEVOPS_*` environment variables.
-4. If you're using GitLab:
-    1. Replace `<YOUR_GITLAB_USER>` with the username of your Atlantis GitLab user without the `@`.
-    2. Delete all the `ATLANTIS_GH_*`, `ATLANTIS_GITEA_*`, `ATLANTIS_BITBUCKET_*`, and `ATLANTIS_AZUREDEVOPS_*` environment variables.
-5. If you're using Gitea:
-    1. Replace `<YOUR_GITEA_USER>` with the username of your Atlantis Gitea user without the `@`.
-    2. Delete all the `ATLANTIS_GH_*`, `ATLANTIS_GITLAB_*`, `ATLANTIS_BITBUCKET_*`, and `ATLANTIS_AZUREDEVOPS_*` environment variables.
-6. If you're using Bitbucket:
-    1. Replace `<YOUR_BITBUCKET_USER>` with the username of your Atlantis Bitbucket user without the `@`.
-    2. Delete all the `ATLANTIS_GH_*`, `ATLANTIS_GITLAB_*`, `ATLANTIS_GITEA_*`, and `ATLANTIS_AZUREDEVOPS_*` environment variables.
-7. If you're using Azure DevOps:
-    1. Replace `<YOUR_AZUREDEVOPS_USER>` with the username of your Atlantis Azure DevOps user without the `@`.
-    2. Delete all the `ATLANTIS_GH_*`, `ATLANTIS_GITLAB_*`, `ATLANTIS_GITEA_*`, and `ATLANTIS_BITBUCKET_*` environment variables.
-
-#### StatefulSet Manifest
-
-<details>
- <summary>Show...</summary>
-
-```yaml
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: atlantis
-spec:
-  serviceName: atlantis
-  replicas: 1
-  updateStrategy:
-    type: RollingUpdate
-    rollingUpdate:
-      partition: 0
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: atlantis
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: atlantis
-    spec:
-      securityContext:
-        fsGroup: 1000 # Atlantis group (1000) read/write access to volumes.
-      containers:
-      - name: atlantis
-        image: ghcr.io/runatlantis/atlantis:v<VERSION> # 1. Replace <VERSION> with the most recent release.
-        env:
-        - name: ATLANTIS_REPO_ALLOWLIST
-          value: github.com/yourorg/* # 2. Replace this with your own repo allowlist.
-
-        ### GitHub Config ###
-        - name: ATLANTIS_GH_USER
-          value: <YOUR_GITHUB_USER> # 3i. If you're using GitHub replace <YOUR_GITHUB_USER> with the username of your Atlantis GitHub user without the `@`.
-        - name: ATLANTIS_GH_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: atlantis-vcs
-              key: token
-        - name: ATLANTIS_GH_WEBHOOK_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: atlantis-vcs
-              key: webhook-secret
-        ### End GitHub Config ###
-
-        ### GitLab Config ###
-        - name: ATLANTIS_GITLAB_USER
-          value: <YOUR_GITLAB_USER> # 4i. If you're using GitLab replace <YOUR_GITLAB_USER> with the username of your Atlantis GitLab user without the `@`.
-        - name: ATLANTIS_GITLAB_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: atlantis-vcs
-              key: token
-        - name: ATLANTIS_GITLAB_WEBHOOK_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: atlantis-vcs
-              key: webhook-secret
-        ### End GitLab Config ###
-
-        ### Gitea Config ###
-        - name: ATLANTIS_GITEA_USER
-          value: <YOUR_GITEA_USER> # 4i. If you're using Gitea replace <YOUR_GITEA_USER> with the username of your Atlantis Gitea user without the `@`.
-        - name: ATLANTIS_GITEA_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: atlantis-vcs
-              key: token
-        - name: ATLANTIS_GITEA_WEBHOOK_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: atlantis-vcs
-              key: webhook-secret
-        ### End Gitea Config ###
-
-        ### Bitbucket Config ###
-        - name: ATLANTIS_BITBUCKET_USER
-          value: <YOUR_BITBUCKET_USER> # 5i. If you're using Bitbucket replace <YOUR_BITBUCKET_USER> with the username of your Atlantis Bitbucket user without the `@`.
-        - name: ATLANTIS_BITBUCKET_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: atlantis-vcs
-              key: token
-        - name: ATLANTIS_BITBUCKET_WEBHOOK_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: atlantis-vcs
-              key: webhook-secret
-        ### End Bitbucket Config ###
-
-        ### Azure DevOps Config ###
-        - name: ATLANTIS_AZUREDEVOPS_USER
-          value: <YOUR_AZUREDEVOPS_USER> # 6i. If you're using Azure DevOps replace <YOUR_AZUREDEVOPS_USER> with the username of your Atlantis Azure DevOps user without the `@`.
-        - name: ATLANTIS_AZUREDEVOPS_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: atlantis-vcs
-              key: token
-        - name: ATLANTIS_AZUREDEVOPS_WEBHOOK_USER
-          valueFrom:
-            secretKeyRef:
-              name: atlantis-vcs
-              key: basic-user
-        - name: ATLANTIS_AZUREDEVOPS_WEBHOOK_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: atlantis-vcs
-              key: basic-password
-        ### End Azure DevOps Config ###
-
-        - name: ATLANTIS_DATA_DIR
-          value: /atlantis
-        - name: ATLANTIS_PORT
-          value: "4141" # Kubernetes sets an ATLANTIS_PORT variable so we need to override.
-        volumeMounts:
-        - name: atlantis-data
-          mountPath: /atlantis
-        ports:
-        - name: atlantis
-          containerPort: 4141
-        resources:
-          requests:
-            memory: 256Mi
-            cpu: 100m
-          limits:
-            memory: 256Mi
-            cpu: 100m
-        livenessProbe:
-          # We only need to check every 60s since Atlantis is not a
-          # high-throughput service.
-          periodSeconds: 60
-          httpGet:
-            path: /healthz
-            port: 4141
-            # If using https, change this to HTTPS
-            scheme: HTTP
-        readinessProbe:
-          periodSeconds: 60
-          httpGet:
-            path: /healthz
-            port: 4141
-            # If using https, change this to HTTPS
-            scheme: HTTP
-  volumeClaimTemplates:
-  - metadata:
-      name: atlantis-data
-    spec:
-      accessModes: ["ReadWriteOnce"] # Volume should not be shared by multiple nodes.
-      resources:
-        requests:
-          # The biggest thing Atlantis stores is the Git repo when it checks it out.
-          # It deletes the repo after the pull request is merged.
-          storage: 5Gi
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: atlantis
-spec:
-  type: ClusterIP
-  ports:
-  - name: atlantis
-    port: 80
-    targetPort: 4141
-  selector:
-    app.kubernetes.io/name: atlantis
-```
-
-</details>
-
-#### Deployment Manifest
-
-<details>
- <summary>Show...</summary>
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: atlantis
-  labels:
-    app.kubernetes.io/name: atlantis
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: atlantis
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: atlantis
-    spec:
-      containers:
-      - name: atlantis
-        image: ghcr.io/runatlantis/atlantis:v<VERSION> # 1. Replace <VERSION> with the most recent release.
-        env:
-        - name: ATLANTIS_REPO_ALLOWLIST
-          value: github.com/yourorg/* # 2. Replace this with your own repo allowlist.
-
-        ### GitHub Config ###
-        - name: ATLANTIS_GH_USER
-          value: <YOUR_GITHUB_USER> # 3i. If you're using GitHub replace <YOUR_GITHUB_USER> with the username of your Atlantis GitHub user without the `@`.
-        - name: ATLANTIS_GH_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: atlantis-vcs
-              key: token
-        - name: ATLANTIS_GH_WEBHOOK_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: atlantis-vcs
-              key: webhook-secret
-        ### End GitHub Config ###
-
-        ### GitLab Config ###
-        - name: ATLANTIS_GITLAB_USER
-          value: <YOUR_GITLAB_USER> # 4i. If you're using GitLab replace <YOUR_GITLAB_USER> with the username of your Atlantis GitLab user without the `@`.
-        - name: ATLANTIS_GITLAB_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: atlantis-vcs
-              key: token
-        - name: ATLANTIS_GITLAB_WEBHOOK_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: atlantis-vcs
-              key: webhook-secret
-        ### End GitLab Config ###
-
-        ### Gitea Config ###
-        - name: ATLANTIS_GITEA_USER
-          value: <YOUR_GITEA_USER> # 4i. If you're using Gitea replace <YOUR_GITEA_USER> with the username of your Atlantis Gitea user without the `@`.
-        - name: ATLANTIS_GITEA_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: atlantis-vcs
-              key: token
-        - name: ATLANTIS_GITEA_WEBHOOK_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: atlantis-vcs
-              key: webhook-secret
-        ### End Gitea Config ###
-
-        ### Bitbucket Config ###
-        - name: ATLANTIS_BITBUCKET_USER
-          value: <YOUR_BITBUCKET_USER> # 5i. If you're using Bitbucket replace <YOUR_BITBUCKET_USER> with the username of your Atlantis Bitbucket user without the `@`.
-        - name: ATLANTIS_BITBUCKET_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: atlantis-vcs
-              key: token
-        ### End Bitbucket Config ###
-
-        ### Azure DevOps Config ###
-        - name: ATLANTIS_AZUREDEVOPS_USER
-          value: <YOUR_AZUREDEVOPS_USER> # 6i. If you're using Azure DevOps replace <YOUR_AZUREDEVOPS_USER> with the username of your Atlantis Azure DevOps user without the `@`.
-        - name: ATLANTIS_AZUREDEVOPS_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: atlantis-vcs
-              key: token
-        - name: ATLANTIS_AZUREDEVOPS_WEBHOOK_USER
-          valueFrom:
-            secretKeyRef:
-              name: atlantis-vcs
-              key: basic-user
-        - name: ATLANTIS_AZUREDEVOPS_WEBHOOK_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: atlantis-vcs
-              key: basic-password
-        ### End Azure DevOps Config ###
-
-        - name: ATLANTIS_PORT
-          value: "4141" # Kubernetes sets an ATLANTIS_PORT variable so we need to override.
-        ports:
-        - name: atlantis
-          containerPort: 4141
-        resources:
-          requests:
-            memory: 256Mi
-            cpu: 100m
-          limits:
-            memory: 256Mi
-            cpu: 100m
-        livenessProbe:
-          # We only need to check every 60s since Atlantis is not a
-          # high-throughput service.
-          periodSeconds: 60
-          httpGet:
-            path: /healthz
-            port: 4141
-            # If using https, change this to HTTPS
-            scheme: HTTP
-        readinessProbe:
-          periodSeconds: 60
-          httpGet:
-            path: /healthz
-            port: 4141
-            # If using https, change this to HTTPS
-            scheme: HTTP
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: atlantis
-spec:
-  type: ClusterIP
-  ports:
-  - name: atlantis
-    port: 80
-    targetPort: 4141
-  selector:
-    app.kubernetes.io/name: atlantis
-```
-
-</details>
-
-#### Routing and SSL
-
-The manifests above create a Kubernetes `Service` of `type: ClusterIP` which isn't accessible outside your cluster.
-Depending on how you're doing routing into Kubernetes, you may want to use a Service of `type: LoadBalancer` so that Atlantis is accessible
-to GitHub/GitLab and your internal users.
-
-If you want to add SSL you can use something like [cert-manager](https://github.com/cert-manager/cert-manager) to generate SSL
-certs and mount them into the Pod. Then set the `ATLANTIS_SSL_CERT_FILE` and `ATLANTIS_SSL_KEY_FILE` environment variables to enable SSL.
-You could also set up SSL at your LoadBalancer.
-
-**You're done! See [Next Steps](#next-steps) for what to do next.**
-
-### Kubernetes Kustomize
-
-A `kustomization.yaml` file is provided in the directory `kustomize/`, so you may use this repository as a remote base for deploying Atlantis with Kustomize.
-
-You will need to provide a secret (with the default name of `atlantis-vcs`) to configure Atlantis with access credentials for your remote repositories.
-
-Example:
-
-```yaml
-bases:
-- github.com/runatlantis/atlantis//kustomize
-
-resources:
-- secrets.yaml
-```
-
-**Important:** You must ensure you patch the provided manifests with the correct environment variables for your installation. You can create inline patches from your `kustomization.yaml` file such as below:
-
-```yaml
-patchesStrategicMerge:
-- |-
-  apiVersion: apps/v1
-  kind: StatefulSet
-  metadata:
-    name: atlantis
-  spec:
-    template:
-      spec:
-        ...
-```
-
-#### Required
-
-```yaml
-...
- containers:
-  - name: atlantis
-    env:
-      - name: ATLANTIS_REPO_ALLOWLIST
-        value: github.com/yourorg/* # 2. Replace this with your own repo allowlist.
-```
-
-#### GitLab
-
-```yaml
-...
-containers:
-- name: atlantis
-  env:
-    - name: ATLANTIS_GITLAB_USER
-      value: <YOUR_GITLAB_USER> # 4i. If you're using GitLab replace <YOUR_GITLAB_USER> with the username of your Atlantis GitLab user without the `@`.
-    - name: ATLANTIS_GITLAB_TOKEN
-      valueFrom:
-        secretKeyRef:
-          name: atlantis-vcs
-          key: token
-    - name: ATLANTIS_GITLAB_WEBHOOK_SECRET
-      valueFrom:
-        secretKeyRef:
-          name: atlantis-vcs
-          key: webhook-secret
-```
-
-#### Gitea
-
-```yaml
-containers:
-- name: atlantis
-  env:
-    - name: ATLANTIS_GITEA_USER
-      value: <YOUR_GITEA_USER> # 4i. If you're using Gitea replace <YOUR_GITEA_USER> with the username of your Atlantis Gitea user without the `@`.
-    - name: ATLANTIS_GITEA_TOKEN
-      valueFrom:
-        secretKeyRef:
-          name: atlantis-vcs
-          key: token
-    - name: ATLANTIS_GITEA_WEBHOOK_SECRET
-      valueFrom:
-        secretKeyRef:
-          name: atlantis-vcs
-          key: webhook-secret
-```
-
-#### GitHub
-
-```yaml
-...
-containers:
-- name: atlantis
-  env:
-    - name: ATLANTIS_GH_USER
-      value: <YOUR_GITHUB_USER> # 3i. If you're using GitHub replace <YOUR_GITHUB_USER> with the username of your Atlantis GitHub user without the `@`.
-    - name: ATLANTIS_GH_TOKEN
-      valueFrom:
-        secretKeyRef:
-          name: atlantis-vcs
-          key: token
-    - name: ATLANTIS_GH_WEBHOOK_SECRET
-      valueFrom:
-        secretKeyRef:
-          name: atlantis-vcs
-          key: webhook-secret
-```
-
-#### BitBucket
-
-```yaml
-...
-containers:
-- name: atlantis
-  env:
-    - name: ATLANTIS_BITBUCKET_USER
-      value: <YOUR_BITBUCKET_USER> # 5i. If you're using Bitbucket replace <YOUR_BITBUCKET_USER> with the username of your Atlantis Bitbucket user without the `@`.
-    - name: ATLANTIS_BITBUCKET_TOKEN
-      valueFrom:
-        secretKeyRef:
-          name: atlantis-vcs
-          key: token
-```
+The chart installs more than the Atlantis pods, and all of it is needed: the
+`PullStatus` CRD, a Role for Leases and `PullStatus` objects, a cluster token
+Secret and a headless Service for the replicas. Upstream Atlantis's example
+manifests and Kustomize bundle have none of these, so they don't work with this
+fork.
 
 ### OpenShift
 
-The Helm chart and Kubernetes manifests above are compatible with OpenShift, however you need to run
-with an additional environment variable: `HOME=/home/atlantis`. This is required because
-OpenShift runs Docker images with random user id's that use `/` as their home directory.
+The chart hasn't been tested on OpenShift. Two settings likely need changing:
 
-### AWS Fargate
+* The chart's `podSecurityContext` sets `runAsUser: 100` and `fsGroup: 1000`.
+  OpenShift's default `restricted` security context constraint assigns a user
+  from the namespace's range instead, and rejects a fixed one. Set both to
+  `null` in your values to let OpenShift choose.
+* OpenShift's random user has `/` as its home directory. Set `HOME` through
+  `extraEnv`:
 
-If you'd like to run Atlantis on [AWS Fargate](https://aws.amazon.com/fargate/)
- check out the Atlantis module on the [Terraform Module Registry](https://registry.terraform.io/modules/terraform-aws-modules/atlantis/aws/latest)
- and then check out the [Next Steps](#next-steps).
+    ```yaml
+    extraEnv:
+      - name: HOME
+        value: /home/atlantis
+    ```
 
-### Google Kubernetes Engine (GKE)
+### Managed Kubernetes (GKE, EKS, AKS)
 
-You can run Atlantis on GKE using the [Helm chart](#kubernetes-helm-chart) or the [manifests](#kubernetes-manifests).
-
-There is also a set of full Terraform configurations that create a GKE Cluster,
-Cloud Storage Backend and TLS certs: [sethvargo atlantis-on-gke](https://github.com/sethvargo/atlantis-on-gke).
+Use the [Helm chart](#kubernetes-helm-chart). To give Atlantis cloud credentials
+without static keys, annotate its service account for your cloud's workload
+identity (`serviceAccount.annotations`): GKE Workload Identity, EKS IAM roles for
+service accounts or Pod Identity, or AKS Workload Identity. On EKS, the same role
+can also give access to the S3 plan and log stores (`externalStores`), which use
+the default AWS credential chain.
 
 Once you're done, see [Next Steps](#next-steps).
 
-### Google Compute Engine (GCE)
+### Docker image
 
-Atlantis can be run on Google Compute Engine using a Terraform module that deploys it as a Docker container on a managed Compute Engine instance.
-
-This [Terraform module](https://registry.terraform.io/modules/runatlantis/atlantis/gce/latest) features the creation of a Cloud load balancer, a Container-Optimized OS-based VM, a persistent data disk, and a managed instance group.
-
-After it is deployed, see [Next Steps](#next-steps).
-
-### Docker
-
-Atlantis has an [official](https://ghcr.io/runatlantis/atlantis) Docker image: `ghcr.io/runatlantis/atlantis`.
+This fork's image is `ghcr.io/kubelantis/katlantis`, built and published from
+this repository. Upstream's `ghcr.io/runatlantis/atlantis` images don't include
+this fork's Kubernetes-native code.
 
 #### Image variants
 
-Every release is published in four variants. The unsuffixed tag (for example `v0.47.1` or `latest`) is the Alpine image.
+Every release is published in four variants. The unsuffixed tag (for example `v0.40.0-k8s` or `latest`) is the Alpine image.
+
+Every push to `master` is published too: as `dev-<variant>` and, pinned to that commit, `dev-<variant>-<commit>` (for example `dev-alpine-1a2b3c4`), plus `dev` for the Alpine image.
 
 | Tag suffix     | Base   | Bundled Terraform and OpenTofu |
 |----------------|--------|--------------------------------|
@@ -648,183 +172,32 @@ The slim images ship without either binary, so vulnerability scanners do not rep
 
 #### Customization
 
-If you need to modify the Docker image that we provide, for instance to add the terragrunt binary, you can do something like this:
+To add tools to the image, for instance a binary your workflows call, build on
+it:
 
-1. Create a custom docker file
+1. Create a Dockerfile:
 
     ```dockerfile
-    FROM ghcr.io/runatlantis/atlantis:{latest version}
+    FROM ghcr.io/kubelantis/katlantis:{version}
 
-    # copy a terraform binary of the version you need
     USER root
-    COPY terragrunt /usr/local/bin/terragrunt
+    COPY my-tool /usr/local/bin/my-tool
     USER atlantis
     ```
 
-Beginning with version 0.26.0, the Atlantis image has been updated to run under the atlantis user, replacing the previous root user configuration. This change necessitates adjustments in existing container definitions and scripts to accommodate the new user settings. In scenarios where additional packages from other images are required, users can temporarily switch to the root user by inserting USER root in the Dockerfile. Following the installation of necessary packages, it is advisable to revert to the atlantis user for initiating the Atlantis service.
-Additionally, the /docker-entrypoint.d/ directory offers a flexible option for introducing extra scripts to be executed prior to the launch of the Atlantis server. This feature is particularly beneficial for users seeking to customize their Atlantis instance without the need to develop a dedicated pipeline.
-**Important Notice**: There is a critical update regarding the data directory in Atlantis. In versions prior to 0.26.0, the directory was configured to be accessible by the root user. However, with the transition to the atlantis user in newer versions, it is imperative to update the directory permissions accordingly in your current deployment when upgrading to a version later than 0.26.0. This step ensures seamless access and functionality for the atlantis user.
+    The image runs as the `atlantis` user. Switch to `root` only for the steps that
+    need it. Scripts in `/docker-entrypoint.d/` run before the server starts.
 
-1. Build your Docker image
-
-    ```bash
-    docker build -t {YOUR_DOCKER_ORG}/atlantis-custom .
-    ```
-
-1. Run your image
+1. Build it and push it to a registry your cluster can pull from:
 
     ```bash
-    docker run {YOUR_DOCKER_ORG}/atlantis-custom server --gh-user=GITHUB_USERNAME --gh-token=GITHUB_TOKEN
+    docker build -t registry.example.com/atlantis-custom:{tag} .
+    docker push registry.example.com/atlantis-custom:{tag}
     ```
 
-### Microsoft Azure
-
-The standard [Kubernetes Helm Chart](#kubernetes-helm-chart) should work fine on [Azure Kubernetes Service](https://docs.microsoft.com/en-us/azure/aks/intro-kubernetes).
-
-Another option is [Azure Container Instances](https://docs.microsoft.com/en-us/azure/container-instances/). See this community member's [repo](https://github.com/jplane/atlantis-on-aci) or the new and more up-to-date [Terraform module](https://github.com/getindata/terraform-azurerm-atlantis) for install scripts and more information on running Atlantis on ACI.
-
-**Note on ACI Deployment:** Due to a bug in earlier Docker releases, Docker v23.0.0 or later is required for straightforward deployment. Alternatively, the Atlantis Docker image can be pushed to a private registry such as ACR and then used.
-
-### Roll Your Own
-
-If you want to roll your own Atlantis installation, you can get the `atlantis`
-binary from [GitHub](https://github.com/runatlantis/atlantis/releases)
-or use the [official Docker image](https://ghcr.io/runatlantis/atlantis).
-
-#### Startup Command
-
-The exact flags to `atlantis server` depends on your Git host:
-
-##### GitHub
-
-```bash
-atlantis server \
---atlantis-url="$URL" \
---gh-user="$USERNAME" \
---gh-token="$TOKEN" \
---gh-webhook-secret="$SECRET" \
---repo-allowlist="$REPO_ALLOWLIST"
-```
-
-##### GitHub Enterprise
-
-```bash
-HOSTNAME=YOUR_GITHUB_ENTERPRISE_HOSTNAME # ex. github.runatlantis.io or tenant.ghe.com
-atlantis server \
---atlantis-url="$URL" \
---gh-user="$USERNAME" \
---gh-token="$TOKEN" \
---gh-webhook-secret="$SECRET" \
---gh-hostname="$HOSTNAME" \
---repo-allowlist="$REPO_ALLOWLIST"
-```
-
-For GitHub Enterprise Cloud, set `--gh-hostname` to the tenant hostname, such as `tenant.ghe.com`, without `https://` or an `api.` prefix.
-
-##### GitLab
-
-```bash
-atlantis server \
---atlantis-url="$URL" \
---gitlab-user="$USERNAME" \
---gitlab-token="$TOKEN" \
---gitlab-webhook-secret="$SECRET" \
---repo-allowlist="$REPO_ALLOWLIST"
-```
-
-##### GitLab Enterprise
-
-```bash
-HOSTNAME=YOUR_GITLAB_ENTERPRISE_HOSTNAME # ex. gitlab.runatlantis.io
-atlantis server \
---atlantis-url="$URL" \
---gitlab-user="$USERNAME" \
---gitlab-token="$TOKEN" \
---gitlab-webhook-secret="$SECRET" \
---gitlab-hostname="$HOSTNAME" \
---repo-allowlist="$REPO_ALLOWLIST"
-```
-
-##### Gitea
-
-```bash
-GITEA_BASE_URL=YOUR_GITEA_BASE_URL # ex. https://gitea.example.com:3000
-atlantis server \
---atlantis-url="$URL" \
---gitea-user="$USERNAME" \
---gitea-token="$TOKEN" \
---gitea-base-url="$GITEA_BASE_URL" \
---gitea-webhook-secret="$SECRET" \
---gitea-page-size=30 \
---repo-allowlist="$REPO_ALLOWLIST"
-```
-
-##### Bitbucket Cloud (bitbucket.org)
-
-```bash
-atlantis server \
---atlantis-url="$URL" \
---bitbucket-user="$USERNAME" \
---bitbucket-token="$TOKEN" \
---bitbucket-webhook-secret="$SECRET" \
---repo-allowlist="$REPO_ALLOWLIST"
-```
-
-##### Bitbucket Server (aka Stash)
-
-```bash
-BASE_URL=YOUR_BITBUCKET_SERVER_URL # ex. http://bitbucket.mycorp:7990
-atlantis server \
---atlantis-url="$URL" \
---bitbucket-user="$USERNAME" \
---bitbucket-token="$TOKEN" \
---bitbucket-webhook-secret="$SECRET" \
---bitbucket-base-url="$BASE_URL" \
---repo-allowlist="$REPO_ALLOWLIST"
-```
-
-##### Azure DevOps
-
-A certificate and private key are required if using Basic authentication for webhooks.
-
-```bash
-atlantis server \
---atlantis-url="$URL" \
---azuredevops-user="$USERNAME" \
---azuredevops-token="$TOKEN" \
---azuredevops-webhook-user="$ATLANTIS_AZUREDEVOPS_WEBHOOK_USER" \
---azuredevops-webhook-password="$ATLANTIS_AZUREDEVOPS_WEBHOOK_PASSWORD" \
---repo-allowlist="$REPO_ALLOWLIST"
---ssl-cert-file=file.crt
---ssl-key-file=file.key
-```
-
-Where
-
-* `$URL` is the URL that Atlantis can be reached at
-* `$USERNAME` is the GitHub/GitLab/Gitea/Bitbucket/AzureDevops username you generated the token for
-* `$TOKEN` is the access token you created. If you don't want this to be passed
-  in as an argument for security reasons you can specify it in a config file
-   (see [Configuration](server-configuration.md#environment-variables))
-    or as an environment variable: `ATLANTIS_GH_TOKEN` or `ATLANTIS_GITLAB_TOKEN` or `ATLANTIS_GITEA_TOKEN`
-     or `ATLANTIS_BITBUCKET_TOKEN` or `ATLANTIS_AZUREDEVOPS_TOKEN`
-* `$SECRET` is the random key you used for the webhook secret.
-   If you don't want this to be passed in as an argument for security reasons
-    you can specify it in a config file
-     (see [Configuration](server-configuration.md#environment-variables))
-      or as an environment variable: `ATLANTIS_GH_WEBHOOK_SECRET` or `ATLANTIS_GITLAB_WEBHOOK_SECRET` or
-  `ATLANTIS_GITEA_WEBHOOK_SECRET`
-* `$REPO_ALLOWLIST` is which repos Atlantis can run on, ex.
- `github.com/runatlantis/*` or `github.enterprise.corp.com/*`.
-  See [--repo-allowlist](server-configuration.md#repo-allowlist) for more details.
-
-Atlantis is now running!
-::: tip
-We recommend running it under something like Systemd or Supervisord that will
-restart it in case of failure.
-:::
+1. Set `image.repository` and `image.tag` to it in your chart values.
 
 ## Next Steps
 
-* To ensure Atlantis is running, load its UI. By default Atlantis runs on port `4141`.
+* To ensure Atlantis is running, load its UI. The chart's Service exposes it on port `80` (the container listens on `4141`). Reach it through your Ingress, or locally with `kubectl -n atlantis port-forward svc/atlantis 4141:80`.
 * Now you're ready to add Webhooks to your repos. See [Configuring Webhooks](configuring-webhooks.md).
