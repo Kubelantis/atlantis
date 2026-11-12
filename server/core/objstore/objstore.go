@@ -22,6 +22,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 )
 
 // OpTimeout bounds a single S3 call.
@@ -142,16 +143,46 @@ func (b *Bucket) Exists(ctx context.Context, key string) (bool, error) {
 	return false, fmt.Errorf("checking s3://%s/%s: %w", b.Name, key, err)
 }
 
-// Metadata returns key's user metadata, and whether key exists.
-func (b *Bucket) Metadata(ctx context.Context, key string) (map[string]string, bool, error) {
+// ObjectInfo is what Head reports about an object.
+type ObjectInfo struct {
+	// Metadata is the object's user metadata.
+	Metadata map[string]string
+	// ETag identifies this version of the object, for DeleteIfMatch.
+	ETag string
+}
+
+// Head returns key's metadata and ETag, and whether key exists.
+func (b *Bucket) Head(ctx context.Context, key string) (ObjectInfo, bool, error) {
 	out, err := b.Client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(b.Name), Key: aws.String(key)})
 	if err == nil {
-		return out.Metadata, true, nil
+		return ObjectInfo{Metadata: out.Metadata, ETag: aws.ToString(out.ETag)}, true, nil
 	}
 	if IsNotFound(err) {
-		return nil, false, nil
+		return ObjectInfo{}, false, nil
 	}
-	return nil, false, fmt.Errorf("checking s3://%s/%s: %w", b.Name, key, err)
+	return ObjectInfo{}, false, fmt.Errorf("checking s3://%s/%s: %w", b.Name, key, err)
+}
+
+// DeleteIfMatch removes key only while its ETag is still etag, so an object
+// replaced since it was read is kept. It reports whether key was deleted; a
+// replaced or missing object is not an error.
+func (b *Bucket) DeleteIfMatch(ctx context.Context, key, etag string) (bool, error) {
+	_, err := b.Client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(b.Name), Key: aws.String(key), IfMatch: aws.String(etag)})
+	switch {
+	case err == nil:
+		return true, nil
+	case IsNotFound(err) || IsPreconditionFailed(err):
+		return false, nil
+	default:
+		return false, fmt.Errorf("deleting s3://%s/%s: %w", b.Name, key, err)
+	}
+}
+
+// IsPreconditionFailed reports whether err is S3 refusing a conditional
+// request because the object changed.
+func IsPreconditionFailed(err error) bool {
+	var apiErr smithy.APIError
+	return errors.As(err, &apiErr) && apiErr.ErrorCode() == "PreconditionFailed"
 }
 
 // Get opens key for reading. The caller closes the body.

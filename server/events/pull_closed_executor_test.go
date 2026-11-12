@@ -18,6 +18,7 @@ import (
 
 	. "github.com/petergtz/pegomock/v4"
 	lockmocks "github.com/runatlantis/atlantis/server/core/locking/mocks"
+	"github.com/runatlantis/atlantis/server/core/planstore"
 	"github.com/runatlantis/atlantis/server/events"
 	"github.com/runatlantis/atlantis/server/events/command"
 	"github.com/runatlantis/atlantis/server/events/mocks"
@@ -402,11 +403,11 @@ func (s *countingPlanStore) ListWorkspaces(models.Repo, int) ([]string, error) {
 	return nil, nil
 }
 func (s *countingPlanStore) RestorePlans(string, models.Repo, int) error { return nil }
-func (s *countingPlanStore) DeleteForPull(models.Repo, int) error {
+func (s *countingPlanStore) DeleteForPull(models.Repo, int, planstore.Fence) error {
 	s.deleteForPullCalls++
 	return nil
 }
-func (s *countingPlanStore) DeletePlanForProject(models.Repo, int, string, string, string) error {
+func (s *countingPlanStore) DeletePlanForProject(models.Repo, int, string, string, string, planstore.Fence) error {
 	return nil
 }
 

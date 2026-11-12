@@ -89,3 +89,34 @@ func TestDownloadIsAtomic(t *testing.T) {
 	entries, _ := os.ReadDir(filepath.Dir(dst))
 	Equals(t, 1, len(entries))
 }
+
+// DeleteIfMatch deletes only the version that was read: a replaced or missing
+// object is kept, without an error.
+func TestDeleteIfMatch(t *testing.T) {
+	fake := objstoretest.New()
+	b := objstore.NewBucket(fake, objstore.Config{Bucket: "b"})
+	ctx := context.Background()
+	if err := b.Put(ctx, "k", strings.NewReader("v1"), nil); err != nil {
+		t.Fatal(err)
+	}
+	info, found, err := b.Head(ctx, "k")
+	if err != nil || !found || info.ETag == "" {
+		t.Fatalf("head: %v %v %+v", err, found, info)
+	}
+	if err := b.Put(ctx, "k", strings.NewReader("v2"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, err := b.DeleteIfMatch(ctx, "k", info.ETag); err != nil || deleted {
+		t.Fatalf("replaced object: deleted=%v err=%v", deleted, err)
+	}
+	if len(fake.Keys()) != 1 {
+		t.Fatal("replaced object was deleted")
+	}
+	info, _, _ = b.Head(ctx, "k")
+	if deleted, err := b.DeleteIfMatch(ctx, "k", info.ETag); err != nil || !deleted {
+		t.Fatalf("current object: deleted=%v err=%v", deleted, err)
+	}
+	if deleted, err := b.DeleteIfMatch(ctx, "k", info.ETag); err != nil || deleted {
+		t.Fatalf("missing object: deleted=%v err=%v", deleted, err)
+	}
+}

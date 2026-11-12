@@ -286,7 +286,7 @@ func TestDeletePlanForProject_S3Error(t *testing.T) {
 	mock := &mockS3Client{deleteErr: errors.New("forbidden")}
 	store := planstore.NewS3PlanStoreWithClient(mock, "bucket", "pfx", logging.NewNoopLogger(t))
 
-	err := store.DeletePlanForProject(models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42, "default", "dir", "")
+	err := store.DeletePlanForProject(models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42, "default", "dir", "", nil)
 	require.ErrorIs(t, err, planstore.ErrNotDeleted)
 	assert.ErrorContains(t, err, "forbidden")
 }
@@ -303,8 +303,8 @@ func TestDeleteErrorsAreCounted(t *testing.T) {
 	store.SetScope(scope)
 
 	_ = store.Remove(testProjectContext(), filepath.Join(t.TempDir(), "gone.tfplan"))
-	_ = store.DeletePlanForProject(models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42, "default", "dir", "")
-	_ = store.DeleteForPull(models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42)
+	_ = store.DeletePlanForProject(models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42, "default", "dir", "", nil)
+	_ = store.DeleteForPull(models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42, nil)
 
 	counter, ok := scope.Snapshot().Counters()["delete_errors_total+"]
 	require.True(t, ok, "delete_errors_total was not reported")
@@ -427,7 +427,7 @@ func TestDeleteForPull_Success(t *testing.T) {
 	}
 	store := planstore.NewS3PlanStoreWithClient(mock, "bucket", "pfx", logging.NewNoopLogger(t))
 
-	err := store.DeleteForPull(models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42)
+	err := store.DeleteForPull(models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{
@@ -444,7 +444,7 @@ func TestDeleteForPull_NoObjects(t *testing.T) {
 	}
 	store := planstore.NewS3PlanStoreWithClient(mock, "bucket", "pfx", logging.NewNoopLogger(t))
 
-	err := store.DeleteForPull(models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42)
+	err := store.DeleteForPull(models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42, nil)
 	require.NoError(t, err)
 	assert.Empty(t, mock.deletedKeys)
 }
@@ -453,7 +453,7 @@ func TestDeleteForPull_ListError(t *testing.T) {
 	mock := &mockS3Client{listErr: errors.New("access denied")}
 	store := planstore.NewS3PlanStoreWithClient(mock, "bucket", "pfx", logging.NewNoopLogger(t))
 
-	err := store.DeleteForPull(models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42)
+	err := store.DeleteForPull(models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42, nil)
 	assert.ErrorContains(t, err, "access denied")
 }
 
@@ -470,7 +470,7 @@ func TestDeleteForPull_DeleteError(t *testing.T) {
 
 	// Every deletion is attempted and failures are reported, so the caller
 	// can warn that plans were left in the bucket.
-	err := store.DeleteForPull(models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42)
+	err := store.DeleteForPull(models.Repo{Owner: "acme", Name: "infra", VCSHost: models.VCSHost{Hostname: "github.com"}}, 42, nil)
 	assert.ErrorContains(t, err, "forbidden")
 	assert.ErrorIs(t, err, planstore.ErrNotDeleted)
 }

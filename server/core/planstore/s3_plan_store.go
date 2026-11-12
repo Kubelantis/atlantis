@@ -146,6 +146,7 @@ func (s *S3PlanStore) s3Key(ctx command.ProjectContext, planPath string, legacy 
 // Save implements PlanStore. The plan is written under the host-scoped key and
 // the legacy key; a failure of either is returned, and the copies already
 // written are deleted so no layout holds a plan the command reported failed.
+// A copy that can't be deleted is counted and returned, marked ErrNotDeleted.
 func (s *S3PlanStore) Save(ctx command.ProjectContext, planPath string) error {
 	host, err := hostOf(ctx.BaseRepo)
 	if err != nil {
@@ -169,14 +170,15 @@ func (s *S3PlanStore) Save(ctx command.ProjectContext, planPath string) error {
 
 	for i, key := range keys {
 		if err := s.put(f, key, metadata); err != nil {
+			errs := []error{err}
 			for _, written := range keys[:i] {
 				c, cancel := opCtx()
 				if delErr := s.bucket.Delete(c, written); delErr != nil {
-					s.logger.Warn("plan left in S3 after a failed upload (key=%s): %s", written, delErr)
+					errs = append(errs, s.deleteFailed(fmt.Sprintf("deleting plan from S3 after a failed upload (key=%s)", written), delErr))
 				}
 				cancel()
 			}
-			return err
+			return errors.Join(errs...)
 		}
 	}
 	return nil
@@ -252,30 +254,62 @@ func metadataValue(metadata map[string]string, key string) string {
 	return ""
 }
 
-// ownsLegacy reports whether the legacy object at key was made for host. A
-// missing object is not owned.
-func (s *S3PlanStore) ownsLegacy(key, host string) (bool, error) {
+// legacyETag reports whether the legacy object at key was made for host, and
+// if so its ETag. A missing object is not owned.
+func (s *S3PlanStore) legacyETag(key, host string) (string, bool, error) {
 	c, cancel := opCtx()
 	defer cancel()
-	metadata, found, err := s.bucket.Metadata(c, key)
+	info, found, err := s.bucket.Head(c, key)
 	if err != nil || !found {
-		return false, err
+		return "", false, err
 	}
-	return strings.EqualFold(metadataValue(metadata, metaVCSHost), host), nil
+	return info.ETag, strings.EqualFold(metadataValue(info.Metadata, metaVCSHost), host), nil
 }
 
-// deleteKey deletes the plan at key, or, for a legacy key, only if it was
-// made for the repo's host. The legacy layout is shared by same-named repos on
-// two hosts.
-func (s *S3PlanStore) deleteKey(repo models.Repo, key string, legacy bool) error {
+// fenced returns fence's error, if the caller no longer holds the pull.
+func fenced(fence Fence) error {
+	if fence == nil {
+		return nil
+	}
+	return fence()
+}
+
+// deleteLegacy deletes the legacy object at key, read with etag and found to
+// be made for this pull's host. The delete is bound to etag: the legacy layout
+// is shared by same-named repos on two hosts, and an object replaced since it
+// was read may be the other host's plan, so it is kept.
+func (s *S3PlanStore) deleteLegacy(key, etag string, fence Fence) (bool, error) {
+	if err := fenced(fence); err != nil {
+		return false, err
+	}
+	c, cancel := opCtx()
+	defer cancel()
+	deleted, err := s.bucket.DeleteIfMatch(c, key, etag)
+	if err != nil {
+		return false, s.deleteFailed(fmt.Sprintf("deleting plan from S3 (key=%s)", key), err)
+	}
+	if !deleted {
+		s.logger.Debug("kept plan at s3://%s/%s: it changed or went away since it was read", s.bucket.Name, key)
+	}
+	return deleted, nil
+}
+
+// deleteKey deletes the plan at key, or, for a legacy key, only the version
+// made for the repo's host, as deleteLegacy does.
+func (s *S3PlanStore) deleteKey(repo models.Repo, key string, legacy bool, fence Fence) error {
 	if legacy {
-		owned, err := s.ownsLegacy(key, repo.VCSHost.Hostname)
+		etag, owned, err := s.legacyETag(key, repo.VCSHost.Hostname)
 		if err != nil {
 			return s.deleteFailed(fmt.Sprintf("checking plan in S3 (key=%s)", key), err)
 		}
 		if !owned {
 			return nil
 		}
+		_, err = s.deleteLegacy(key, etag, fence)
+		return err
+	}
+	if err := fenced(fence); err != nil {
+		return err
 	}
 	c, cancel := opCtx()
 	defer cancel()
@@ -294,17 +328,18 @@ func (s *S3PlanStore) Remove(ctx command.ProjectContext, planPath string) error 
 	}
 	var errs []error
 	for _, legacy := range layouts {
-		if err := s.deleteKey(ctx.BaseRepo, s.s3Key(ctx, planPath, legacy), legacy); err != nil {
+		if err := s.deleteKey(ctx.BaseRepo, s.s3Key(ctx, planPath, legacy), legacy, nil); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errors.Join(errs...), utils.RemoveIgnoreNonExistent(planPath))
 }
 
-// planKeys yields the key and pull-relative path of every plan file of a pull
-// in one layout. In the legacy layout, only plans made for the repo's host are
-// yielded.
-func (s *S3PlanStore) planKeys(repo models.Repo, pullNum int, legacy bool, fn func(key, rel string) error) error {
+// planKeys yields the key, pull-relative path and ETag of every plan file of a
+// pull in one layout. In the legacy layout, only plans made for the repo's
+// host are yielded, and etag is the version that was checked; in the
+// host-scoped layout etag is empty.
+func (s *S3PlanStore) planKeys(repo models.Repo, pullNum int, legacy bool, fn func(key, rel, etag string) error) error {
 	prefix := s.pullPrefix(repo, pullNum, legacy)
 	host := repo.VCSHost.Hostname
 	for key, err := range s.bucket.List(context.Background(), prefix) {
@@ -314,8 +349,11 @@ func (s *S3PlanStore) planKeys(repo models.Repo, pullNum int, legacy bool, fn fu
 		if !strings.HasSuffix(key, ".tfplan") {
 			continue
 		}
+		etag := ""
 		if legacy {
-			owned, err := s.ownsLegacy(key, host)
+			var owned bool
+			var err error
+			etag, owned, err = s.legacyETag(key, host)
 			if err != nil {
 				return fmt.Errorf("checking plan in S3 (key=%s): %w", key, err)
 			}
@@ -323,7 +361,7 @@ func (s *S3PlanStore) planKeys(repo models.Repo, pullNum int, legacy bool, fn fu
 				continue
 			}
 		}
-		if err := fn(key, strings.TrimPrefix(key, prefix)); err != nil {
+		if err := fn(key, strings.TrimPrefix(key, prefix), etag); err != nil {
 			return err
 		}
 	}
@@ -337,7 +375,7 @@ func (s *S3PlanStore) ListWorkspaces(repo models.Repo, pullNum int) ([]string, e
 	}
 	seen := map[string]struct{}{}
 	for _, legacy := range layouts {
-		err := s.planKeys(repo, pullNum, legacy, func(_, rel string) error {
+		err := s.planKeys(repo, pullNum, legacy, func(_, rel, _ string) error {
 			if workspace, _, ok := strings.Cut(rel, "/"); ok && workspace != "" {
 				seen[workspace] = struct{}{}
 			}
@@ -367,7 +405,7 @@ func (s *S3PlanStore) RestorePlans(pullDir string, repo models.Repo, pullNum int
 	}
 	restored := map[string]struct{}{}
 	for _, legacy := range layouts {
-		err := s.planKeys(repo, pullNum, legacy, func(key, rel string) error {
+		err := s.planKeys(repo, pullNum, legacy, func(key, rel, _ string) error {
 			if _, ok := restored[rel]; ok {
 				return nil
 			}
@@ -392,49 +430,78 @@ func (s *S3PlanStore) RestorePlans(pullDir string, repo models.Repo, pullNum int
 
 // DeleteForPull implements PlanStore. It attempts every deletion and returns
 // all failures, so callers can report plans left in the bucket. Legacy plans
-// are deleted one by one, and only those made for this pull's host.
-func (s *S3PlanStore) DeleteForPull(repo models.Repo, pullNum int) error {
+// are deleted one by one, and only the versions made for this pull's host.
+// Once fence reports the pull lost, it stops and returns that error: the
+// plans left are the new holder's.
+func (s *S3PlanStore) DeleteForPull(repo models.Repo, pullNum int, fence Fence) error {
 	if _, err := hostOf(repo); err != nil {
 		return s.deleteFailed("deleting plans from S3", err)
 	}
 	var errs []error
-	deleted, err := s.bucket.DeletePrefix(context.Background(), s.pullPrefix(repo, pullNum, false))
-	if err != nil {
-		errs = append(errs, err)
+	deleted := 0
+	stop := func(err error) error {
+		s.logger.Warn("stopped deleting plans from S3 for %s#%d after deleting %d: %s", repo.FullName, pullNum, deleted, err)
+		return errors.Join(append(errs, err)...)
 	}
-	err = s.planKeys(repo, pullNum, true, func(key, _ string) error {
+	for key, err := range s.bucket.List(context.Background(), s.pullPrefix(repo, pullNum, false)) {
+		if err != nil {
+			errs = append(errs, s.deleteFailed(fmt.Sprintf("listing plans in S3 for %s#%d", repo.FullName, pullNum), err))
+			break
+		}
+		if err := fenced(fence); err != nil {
+			return stop(err)
+		}
 		c, cancel := opCtx()
-		defer cancel()
-		if err := s.bucket.Delete(c, key); err != nil {
+		err := s.bucket.Delete(c, key)
+		cancel()
+		if err != nil {
+			errs = append(errs, s.deleteFailed(fmt.Sprintf("deleting plan from S3 (key=%s)", key), err))
+			continue
+		}
+		deleted++
+	}
+	var fenceErr error
+	err := s.planKeys(repo, pullNum, true, func(key, _, etag string) error {
+		ok, err := s.deleteLegacy(key, etag, fence)
+		if errors.Is(err, ErrNotDeleted) {
 			errs = append(errs, err)
 			return nil
 		}
-		deleted++
+		if err != nil {
+			fenceErr = err
+			return err
+		}
+		if ok {
+			deleted++
+		}
 		return nil
 	})
+	if fenceErr != nil {
+		return stop(fenceErr)
+	}
 	if err != nil {
-		errs = append(errs, err)
+		errs = append(errs, s.deleteFailed(fmt.Sprintf("listing plans in S3 for %s#%d", repo.FullName, pullNum), err))
 	}
 	if deleted > 0 {
 		s.logger.Info("deleted %d plan(s) from S3 for %s#%d", deleted, repo.FullName, pullNum)
 	}
-	if err := errors.Join(errs...); err != nil {
-		return s.deleteFailed(fmt.Sprintf("deleting plans from S3 for %s#%d", repo.FullName, pullNum), err)
-	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // DeletePlanForProject implements PlanStore. A failed delete is returned,
 // marked ErrNotDeleted.
-func (s *S3PlanStore) DeletePlanForProject(repo models.Repo, pullNum int, workspace, repoRelDir, projectName string) error {
+func (s *S3PlanStore) DeletePlanForProject(repo models.Repo, pullNum int, workspace, repoRelDir, projectName string, fence Fence) error {
 	if _, err := hostOf(repo); err != nil {
 		return s.deleteFailed("deleting plan from S3", err)
 	}
 	var errs []error
 	for _, legacy := range layouts {
 		key := s.pullKey(repo, pullNum, legacy, workspace, repoRelDir, planFilename(workspace, projectName))
-		if err := s.deleteKey(repo, key, legacy); err != nil {
+		if err := s.deleteKey(repo, key, legacy, fence); err != nil {
 			errs = append(errs, err)
+			if !errors.Is(err, ErrNotDeleted) {
+				break // the pull was lost: the plan is the new holder's
+			}
 		}
 	}
 	return errors.Join(errs...)

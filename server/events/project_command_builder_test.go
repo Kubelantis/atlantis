@@ -16,6 +16,7 @@ import (
 
 	"github.com/hashicorp/go-version"
 	. "github.com/petergtz/pegomock/v4"
+	"github.com/runatlantis/atlantis/server/core/planstore"
 	"github.com/runatlantis/atlantis/server/core/runtime"
 	"github.com/runatlantis/atlantis/server/core/terraform"
 	tfclientmocks "github.com/runatlantis/atlantis/server/core/terraform/tfclient/mocks"
@@ -5806,10 +5807,10 @@ func (m *mockExternalPlanStore) RestorePlans(pullDir string, repo models.Repo, p
 	}
 	return nil
 }
-func (m *mockExternalPlanStore) DeleteForPull(repo models.Repo, pullNum int) error {
+func (m *mockExternalPlanStore) DeleteForPull(repo models.Repo, pullNum int, _ planstore.Fence) error {
 	return nil
 }
-func (m *mockExternalPlanStore) DeletePlanForProject(repo models.Repo, pullNum int, workspace, repoRelDir, projectName string) error {
+func (m *mockExternalPlanStore) DeletePlanForProject(repo models.Repo, pullNum int, workspace, repoRelDir, projectName string, _ planstore.Fence) error {
 	return nil
 }
 

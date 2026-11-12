@@ -122,6 +122,7 @@ func (l *DefaultDeleteLockCommand) DeleteLock(logger logging.SimpleLogging, id s
 			lock.Workspace,
 			lock.Project.Path,
 			lock.Project.ProjectName,
+			pullFence(l.WorkingDirLocker, lock.Pull.BaseRepo, lock.Pull.Num),
 		); err != nil {
 			logger.Err("plan discarded, but not deleted from the plan store: %s", err)
 			return lock, &PlanStoreCleanupError{Err: err}
@@ -205,7 +206,7 @@ func (l *DefaultDeleteLockCommand) DeleteLocksByPull(logger logging.SimpleLoggin
 		// Only this lock's stored plan, not the pull's: the lock is what
 		// was discarded.
 		if l.PlanStore != nil {
-			if err := l.PlanStore.DeletePlanForProject(lock.Pull.BaseRepo, pullNum, lock.Workspace, lock.Project.Path, lock.Project.ProjectName); err != nil {
+			if err := l.PlanStore.DeletePlanForProject(lock.Pull.BaseRepo, pullNum, lock.Workspace, lock.Project.Path, lock.Project.ProjectName, pullFence(l.WorkingDirLocker, repo, pullNum)); err != nil {
 				logger.Err("plan discarded, but not deleted from the plan store: %s", err)
 				storeErrs = append(storeErrs, err)
 			}

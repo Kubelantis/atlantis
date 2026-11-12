@@ -77,6 +77,6 @@ func TestRestoreListAndDeleteAcrossPages(t *testing.T) {
 	}))
 	assert.Len(t, restored, 3)
 
-	require.NoError(t, store.DeleteForPull(ctx.BaseRepo, ctx.Pull.Num))
+	require.NoError(t, store.DeleteForPull(ctx.BaseRepo, ctx.Pull.Num, nil))
 	assert.Empty(t, fake.Keys())
 }

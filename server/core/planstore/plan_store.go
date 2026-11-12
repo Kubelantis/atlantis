@@ -30,6 +30,11 @@ func PullDir(root, repoFullName string, pullNum int) string {
 // distinguish this from actual restore failures.
 var ErrRestoreNotSupported = errors.New("plan store does not support restore")
 
+// Fence reports an error once the caller can no longer trust that it holds the
+// pull, for example after losing its pull Lease to another replica. Deletes
+// check it and stop: the plans are the new holder's now. Nil means no check.
+type Fence func() error
+
 // PlanStore abstracts plan file persistence.
 // LocalPlanStore wraps current filesystem behavior (Save/Load are no-ops).
 // S3PlanStore uploads after plan and downloads before apply.
@@ -62,10 +67,10 @@ type PlanStore interface {
 	RestorePlans(pullDir string, repo models.Repo, pullNum int) error
 	// DeleteForPull removes all stored plan files for a pull request.
 	// Called during PR close/merge cleanup.
-	DeleteForPull(repo models.Repo, pullNum int) error
+	DeleteForPull(repo models.Repo, pullNum int, fence Fence) error
 	// DeletePlanForProject removes a specific project's plan from external storage.
 	// Called when a single lock is deleted via the UI or API.
-	DeletePlanForProject(repo models.Repo, pullNum int, workspace, repoRelDir, projectName string) error
+	DeletePlanForProject(repo models.Repo, pullNum int, workspace, repoRelDir, projectName string, fence Fence) error
 }
 
 // LocalPlanStore implements PlanStore using the local filesystem.
@@ -160,10 +165,10 @@ func containsPlanFile(dir string) (bool, error) {
 	return found, nil
 }
 
-func (s *LocalPlanStore) DeleteForPull(_ models.Repo, _ int) error {
+func (s *LocalPlanStore) DeleteForPull(_ models.Repo, _ int, _ Fence) error {
 	return nil // no-op: working dir deletion handles local files
 }
 
-func (s *LocalPlanStore) DeletePlanForProject(_ models.Repo, _ int, _, _, _ string) error {
+func (s *LocalPlanStore) DeletePlanForProject(_ models.Repo, _ int, _, _, _ string, _ Fence) error {
 	return nil // no-op: local plan deleted by WorkingDir.DeletePlan
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/runatlantis/atlantis/server/core/config/valid"
 	"github.com/runatlantis/atlantis/server/core/kube/kubedb"
 	"github.com/runatlantis/atlantis/server/core/kube/kubedb/kubedbtest"
+	"github.com/runatlantis/atlantis/server/core/planstore"
 	"github.com/runatlantis/atlantis/server/core/runtime"
 	"github.com/runatlantis/atlantis/server/events"
 	"github.com/runatlantis/atlantis/server/events/command"
@@ -2595,9 +2596,9 @@ func (s *restoringPlanStore) Remove(command.ProjectContext, string) error { retu
 func (s *restoringPlanStore) ListWorkspaces(models.Repo, int) ([]string, error) {
 	return nil, nil
 }
-func (s *restoringPlanStore) RestorePlans(string, models.Repo, int) error { return nil }
-func (s *restoringPlanStore) DeleteForPull(models.Repo, int) error        { return nil }
-func (s *restoringPlanStore) DeletePlanForProject(models.Repo, int, string, string, string) error {
+func (s *restoringPlanStore) RestorePlans(string, models.Repo, int) error           { return nil }
+func (s *restoringPlanStore) DeleteForPull(models.Repo, int, planstore.Fence) error { return nil }
+func (s *restoringPlanStore) DeletePlanForProject(models.Repo, int, string, string, string, planstore.Fence) error {
 	return nil
 }
 
