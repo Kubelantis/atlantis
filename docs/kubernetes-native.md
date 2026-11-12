@@ -13,11 +13,15 @@ kubectl -n atlantis create secret generic atlantis-vcs \
   --from-literal=ATLANTIS_GH_USER=my-bot \
   --from-literal=ATLANTIS_GH_TOKEN=... \
   --from-literal=ATLANTIS_GH_WEBHOOK_SECRET=...
-helm install atlantis deploy/helm/atlantis -n atlantis \
+helm install atlantis oci://ghcr.io/kubelantis/charts/atlantis --version 0.40.0 -n atlantis \
   --set vcsSecretName=atlantis-vcs \
   --set atlantisUrl=https://atlantis.example.com \
   --set repoAllowlist='github.com/example-org/*'
 ```
+
+Each release publishes the chart at `oci://ghcr.io/kubelantis/charts/atlantis`,
+with the release's version, and the chart's default image is the one built for
+that release. To install from a checkout instead, use `deploy/helm/atlantis`.
 
 Atlantis runs as a StatefulSet: each replica has a stable name and its own
 volume for clones and plans (`persistence.*`). The chart installs the

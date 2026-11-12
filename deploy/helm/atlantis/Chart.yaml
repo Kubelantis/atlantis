@@ -2,7 +2,9 @@ apiVersion: v2
 name: atlantis
 description: Kubernetes-native Atlantis — highly available Terraform pull request automation with Lease-based coordination.
 type: application
-version: 0.1.0
-appVersion: "0.40.0-k8s"
+# Released charts take both versions from the release tag
+# (.github/workflows/chart-release.yml); these are the latest release's.
+version: 0.40.0
+appVersion: "0.40.0"
 kubeVersion: ">=1.27.0-0"  # persistentVolumeClaimRetentionPolicy
 keywords: [terraform, atlantis, gitops, iac]

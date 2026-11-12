@@ -1,0 +1,80 @@
+name: chart-release
+
+# Publishes the Helm chart as an OCI artifact for every release tag:
+# oci://ghcr.io/<owner>/charts/atlantis, versioned like the release, so the
+# chart's default image is the one built for the same tag.
+
+on:
+  push:
+    tags:
+      - v*.*.*
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish the chart for, e.g. v0.40.0
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CHART: deploy/helm/atlantis
+
+jobs:
+  publish:
+    name: Publish Helm chart
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write # push the chart to ghcr.io
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      # The chart version and appVersion both follow the tag (v0.40.0 ->
+      # 0.40.0), so the chart's default image tag, "v" + appVersion, is the
+      # image built for this release. The tag is checked before it is used.
+      - name: Versions from the tag
+        id: version
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::$TAG is not a vX.Y.Z tag"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "registry=oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/${{ steps.version.outputs.tag }}
+
+      - name: Lint
+        run: helm lint --strict "$CHART" --set vcsSecretName=atlantis-vcs
+
+      - name: Package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          helm package "$CHART" --version "$VERSION" --app-version "$VERSION" --destination "$RUNNER_TEMP/chart"
+          ls -l "$RUNNER_TEMP/chart"
+
+      - name: Push to ghcr.io
+        env:
+          REGISTRY: ${{ steps.version.outputs.registry }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "$GITHUB_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          helm push "$RUNNER_TEMP"/chart/atlantis-*.tgz "$REGISTRY"
+          helm registry logout ghcr.io
