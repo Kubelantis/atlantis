@@ -7,7 +7,7 @@
 > [docs/kubernetes-native.md](docs/kubernetes-native.md) and the Helm chart in
 > [deploy/helm/atlantis](deploy/helm/atlantis).
 
-[![Latest Release](https://img.shields.io/github/release/runatlantis/atlantis.svg)](https://github.com/runatlantis/atlantis/releases/latest)
+[![Latest Release](https://img.shields.io/github/v/release/Kubelantis/atlantis?include_prereleases)](https://github.com/Kubelantis/atlantis/releases)
 [![SuperDopeBadge](./runatlantis.io/public/hightower-super-dope.svg)](https://twitter.com/kelseyhightower/status/893260922222813184)
 [![Go Report Card](https://goreportcard.com/badge/github.com/runatlantis/atlantis)](https://goreportcard.com/report/github.com/runatlantis/atlantis)
 [![Go Reference](https://pkg.go.dev/badge/github.com/runatlantis/atlantis.svg)](https://pkg.go.dev/github.com/runatlantis/atlantis)
