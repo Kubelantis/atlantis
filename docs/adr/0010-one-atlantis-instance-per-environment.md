@@ -20,11 +20,13 @@ Each instance of this fork is its own Helm release, with its own ServiceAccount,
 
 GitHub delivers each event to every webhook on a repository, and a GitHub App has exactly one webhook URL. So several instances each receive every pull request and comment, independently.
 
-Checking the code found three ways a server can plan outside its own repo config file:
+Checking the code found four ways around this separation. Three let a server plan outside its own repo config file:
 
 - **Missing or empty file.** If the file is missing from the pull request or lists no projects, the default autodiscovery mode plans every modified directory.
 - **Targeted plans.** `<command> plan -d <dir>` for a directory that isn't in the file still runs, with default settings.
 - **Edited file.** The file is read from the pull request, so the pull request can add directories to it.
+
+The fourth defeats distinct command names. Besides its own executable name and `@<bot user>`, every server accepts the hard-coded, undocumented alias `run` (`CommentParser.Parse`). So `run apply` reaches every instance, and applies on each one the commenter is authorized for and whose apply requirements are met. Team allowlists and apply requirements can't tell that comment apart from an intended one.
 
 ## Decision
 
@@ -45,7 +47,11 @@ Each instance's cloud identity can reach only its own environment. That is the s
 
 **Distinct command names.** With a shared `atlantis` command, `atlantis apply` would apply every planned environment at once and `atlantis unlock` would discard plans everywhere. Comment history also wouldn't show which environment a command targeted. Autoplan is unaffected: each instance plans the projects in its own file on every pull request.
 
-**Required settings on every instance.** These close the three gaps above:
+Distinct names are only environment-specific once the `run` alias is off. This needs a fork change: a new opt-in server flag, `--disable-run-alias`, under which a server accepts only its executable name and `@<bot user>`. Each instance's `@<bot user>` is already distinct, since each has its own GitHub App. Every instance sets the flag, and prod isn't rolled out without it.
+
+**Required settings on every instance.** These close the four gaps above:
+
+- `--disable-run-alias`, once the fork change lands;
 
 - server-side `autodiscover: mode: disabled`, which overrides the repo's setting;
 - `--silence-no-projects=true`, so a targeted plan outside the file is skipped;
@@ -62,9 +68,9 @@ Each instance's cloud identity can reach only its own environment. That is the s
 
 **Rollout.**
 
-1. Split the repo config into one file per environment, and add CODEOWNERS and branch protection.
+1. Split the repo config into one file per environment, and add CODEOWNERS and branch protection. Implement `--disable-run-alias` (issue, then pull request).
 2. Deploy dev and staging alongside the current setup, and compare plans.
-3. Deploy prod with the settings above, moving one prod project group at a time.
+3. Deploy prod with the settings above, including `--disable-run-alias`, moving one prod project group at a time.
 4. Retire the shared instance and its broad credentials.
 
 **Alternatives considered.**
@@ -78,7 +84,8 @@ Each instance's cloud identity can reach only its own environment. That is the s
 - A malicious or mistaken pull request can only reach the environment whose instance plans it. Prod plans don't run before code-owner review.
 - Prod gets stricter rules than dev: approvers, policies and no repo-side overrides.
 - Three instances to run, upgrade and monitor, with three GitHub Apps and three sets of credentials.
-- Engineers use `atlantis-<env>` commands. A comment with the old `atlantis` name gets no response once the shared instance is retired.
+- Engineers use `atlantis-<env>` commands. A comment with the old `atlantis` name, or with `run`, gets no response once the shared instance is retired.
+- Prod depends on one fork change, `--disable-run-alias`. It is opt-in, so single-instance setups keep the `run` alias.
 - Follow-ups, each needing its own issue:
   - a server-side directory allowlist per instance, as a hard boundary that pull requests can't change;
   - separate plan and apply credentials, since native `env` applies to every step and prod can't plan with a read-only role;
