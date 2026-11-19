@@ -14,6 +14,7 @@ Architecture Decision Records (ADRs) preserve important design choices and their
 | [0006](0006-structured-audit-events.md) | Structured audit events | Proposed |
 | [0007](0007-bounded-metric-labels-and-histograms.md) | Bounded metric labels and histograms | Proposed |
 | [0009](0009-vcs-host-in-persisted-keys.md) | VCS host in persisted keys | Proposed |
+| [0010](0010-one-atlantis-instance-per-environment.md) | One Atlantis instance per environment | Proposed |
 
 Update this table when adding or changing an ADR.
 
