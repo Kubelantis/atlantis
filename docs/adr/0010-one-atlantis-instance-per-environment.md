@@ -20,13 +20,15 @@ Each instance of this fork is its own Helm release, with its own ServiceAccount,
 
 GitHub delivers each event to every webhook on a repository, and a GitHub App has exactly one webhook URL. So several instances each receive every pull request and comment, independently.
 
-Checking the code found four ways around this separation. Three let a server plan outside its own repo config file:
+Checking the code found five ways around this separation. Three let a server plan outside its own repo config file:
 
 - **Missing or empty file.** If the file is missing from the pull request or lists no projects, the default autodiscovery mode plans every modified directory.
 - **Targeted plans.** `<command> plan -d <dir>` for a directory that isn't in the file still runs, with default settings.
 - **Edited file.** The file is read from the pull request, so the pull request can add directories to it.
 
 The fourth defeats distinct command names. Besides its own executable name and `@<bot user>`, every server accepts the hard-coded, undocumented alias `run` (`CommentParser.Parse`). So `run apply` reaches every instance, and applies on each one the commenter is authorized for and whose apply requirements are met. Team allowlists and apply requirements can't tell that comment apart from an intended one.
+
+The fifth defeats approval before planning. Pre-workflow hooks run in a clone of the pull request's head, with the server's credentials, before any project is built. `plan_requirements` are only checked later, per project, so they don't cover hooks. A hook that runs a script from the repository, or a tool that evaluates pull request files (for example HCL with `run_cmd`), runs pull request code before anyone has approved it. Post-workflow hooks run after every autoplan, even when every plan was refused by its requirements. Terragrunt and CDK Terrain discovery already wait for approval when `plan_requirements` include `approved`; hooks don't.
 
 ## Decision
 
@@ -49,13 +51,14 @@ Each instance's cloud identity can reach only its own environment. That is the s
 
 Distinct names are only environment-specific once the `run` alias is off. This needs a fork change: a new opt-in server flag, `--disable-run-alias`, under which a server accepts only its executable name and `@<bot user>`. Each instance's `@<bot user>` is already distinct, since each has its own GitHub App. Every instance sets the flag, and prod isn't rolled out without it.
 
-**Required settings on every instance.** These close the four gaps above:
+**Required settings on every instance.** These close the five gaps above:
 
 - `--disable-run-alias`, once the fork change lands;
 
 - server-side `autodiscover: mode: disabled`, which overrides the repo's setting;
 - `--silence-no-projects=true`, so a targeted plan outside the file is skipped;
-- for prod, `plan_requirements`, `apply_requirements` and `import_requirements` of `[approved, mergeable, undiverged]`, with branch protection requiring CODEOWNERS review. Atlantis's `approved` counts any approval; `mergeable` is what makes code-owner review count, so nothing a pull request adds to `atlantis-prod.yaml` runs before a code owner approves.
+- for prod, `plan_requirements`, `apply_requirements` and `import_requirements` of `[approved, mergeable, undiverged]`, with branch protection requiring CODEOWNERS review. Atlantis's `approved` counts any approval; `mergeable` is what makes code-owner review count, so nothing a pull request adds to `atlantis-prod.yaml` runs before a code owner approves;
+- on prod, no pre- or post-workflow hooks that run or read pull request content, until hooks wait for approval like tool discovery does (a fork change). A hook that only runs a fixed server-side command on server-side input is fine.
 
 **Governance.**
 
@@ -81,12 +84,14 @@ Distinct names are only environment-specific once the `run` alias is off. This n
 
 ## Consequences
 
-- A malicious or mistaken pull request can only reach the environment whose instance plans it. Prod plans don't run before code-owner review.
+- A malicious or mistaken pull request can only reach the environment whose instance plans it. Pull request code doesn't run with prod credentials before code-owner review, through plans or, with the hook rule above, through workflow hooks.
 - Prod gets stricter rules than dev: approvers, policies and no repo-side overrides.
 - Three instances to run, upgrade and monitor, with three GitHub Apps and three sets of credentials.
 - Engineers use `atlantis-<env>` commands. A comment with the old `atlantis` name, or with `run`, gets no response once the shared instance is retired.
 - Prod depends on one fork change, `--disable-run-alias`. It is opt-in, so single-instance setups keep the `run` alias.
+- Prod can't use workflow hooks that run pull request content until hooks wait for approval.
 - Follow-ups, each needing its own issue:
+  - pre- and post-workflow hooks wait for approval when `plan_requirements` include `approved`, as Terragrunt and CDK Terrain discovery already do, and the pull request is told why they were skipped;
   - a server-side directory allowlist per instance, as a hard boundary that pull requests can't change;
   - separate plan and apply credentials, since native `env` applies to every step and prod can't plan with a read-only role;
   - caller identity (ADR 0008), since API and UI actions share one identity until then. Leave the API off on prod meanwhile.
